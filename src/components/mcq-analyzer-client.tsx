@@ -1,12 +1,6 @@
 "use client";
 
-import {
-  type ChangeEvent,
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-} from "react";
+import { type ChangeEvent, useCallback, useRef, useState } from "react";
 import { formatGeneratedTimestampIst } from "@/lib/format-timestamp-ist";
 import {
   inputStatusBadgeClasses,
@@ -81,27 +75,17 @@ function blobToBase64Payload(blob: Blob): Promise<string> {
 export function McqAnalyzerClient() {
   const [testText, setTestText] = useState("");
   const [pendingPdfFile, setPendingPdfFile] = useState<File | null>(null);
-  const [plainTextSourceName, setPlainTextSourceName] = useState<string | null>(
-    null
-  );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<EvaluateSuccess | null>(null);
-  const [filePickerMounted, setFilePickerMounted] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    setFilePickerMounted(true);
-  }, []);
 
   const onSubmit = useCallback(async () => {
     setError(null);
     setSuccess(null);
     const trimmed = testText.trim();
     if (pendingPdfFile === null && trimmed.length === 0) {
-      setError(
-        "Paste your test, upload a text file, or upload a PDF before running the review."
-      );
+      setError("Paste your test or upload a PDF before running the review.");
       return;
     }
     if (pendingPdfFile !== null && pendingPdfFile.size > MAX_UPLOAD_BYTES) {
@@ -151,106 +135,68 @@ export function McqAnalyzerClient() {
     }
   }, [pendingPdfFile, testText]);
 
-  const onFileChange = useCallback(
-    async (event: ChangeEvent<HTMLInputElement>) => {
-      const file = event.target.files?.[0];
-      if (!file) {
-        return;
-      }
-      setError(null);
-      setSuccess(null);
-      if (file.size > MAX_UPLOAD_BYTES) {
-        setPlainTextSourceName(null);
-        setError(`File must be under ${MAX_UPLOAD_MB} MB.`);
-        event.target.value = "";
-        return;
-      }
-      if (isPdfFile(file)) {
-        setPendingPdfFile(file);
-        setPlainTextSourceName(null);
-        setTestText("");
-      } else {
-        setPendingPdfFile(null);
-        try {
-          const text = await file.text();
-          setPlainTextSourceName(file.name);
-          setTestText(text);
-        } catch {
-          setPlainTextSourceName(null);
-          setError("Could not read that file. Try .txt, .md, or .pdf.");
-        }
-      }
+  const onFileChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+    setError(null);
+    setSuccess(null);
+    if (file.size > MAX_UPLOAD_BYTES) {
+      setError(`PDF must be under ${MAX_UPLOAD_MB} MB.`);
       event.target.value = "";
-    },
-    []
-  );
+      return;
+    }
+    if (!isPdfFile(file)) {
+      setError("Only PDF files are supported.");
+      event.target.value = "";
+      return;
+    }
+    setPendingPdfFile(file);
+    setTestText("");
+    event.target.value = "";
+  }, []);
 
   const hasMcqInput = pendingPdfFile !== null || testText.trim().length > 0;
 
   return (
     <>
-      <section className="flex flex-col gap-4 rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-900/40">
-        {filePickerMounted ? (
-          <div className="flex flex-col gap-3 rounded-xl border border-zinc-200 bg-zinc-50/80 p-3 dark:border-zinc-700 dark:bg-zinc-950/50 sm:flex-row sm:items-center sm:gap-0 sm:p-2 sm:pr-4">
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".txt,.md,.pdf,.text,text/plain,text/markdown,application/pdf"
-              onChange={onFileChange}
-              className="sr-only"
-              aria-label="Upload a .txt, .md, or .pdf file"
-            />
-            <button
-              type="button"
-              onClick={() => {
-                fileInputRef.current?.click();
-              }}
-              className="inline-flex shrink-0 items-center justify-center rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700 dark:bg-emerald-500 dark:hover:bg-emerald-600 sm:mr-3 sm:py-2"
-            >
-              Choose file
-            </button>
-            <div className="min-h-10 flex flex-1 items-center border-t border-zinc-200 pt-3 sm:border-t-0 sm:border-l sm:pl-4 sm:pt-0 dark:border-zinc-700">
-              {pendingPdfFile ? (
-                <p className="flex w-full min-w-0 flex-col gap-0.5 text-sm sm:flex-row sm:items-baseline sm:gap-2">
-                  <span className="shrink-0 rounded-md bg-emerald-100 px-2 py-0.5 text-xs font-semibold uppercase tracking-wide text-emerald-900 dark:bg-emerald-950/80 dark:text-emerald-300">
-                    PDF
-                  </span>
-                  <span className="truncate font-medium text-zinc-900 dark:text-zinc-100">
-                    {pendingPdfFile.name}
-                  </span>
-                </p>
-              ) : null}
-              {!pendingPdfFile && plainTextSourceName ? (
-                <p className="flex w-full min-w-0 flex-col gap-0.5 text-sm sm:flex-row sm:items-baseline sm:gap-2">
-                  <span className="shrink-0 rounded-md bg-zinc-200/80 px-2 py-0.5 text-xs font-semibold uppercase tracking-wide text-zinc-800 dark:bg-zinc-800 dark:text-zinc-200">
-                    Text
-                  </span>
-                  <span className="truncate text-zinc-700 dark:text-zinc-300">
-                    Loaded from{" "}
-                    <span className="font-mono font-medium text-zinc-900 dark:text-zinc-100">
-                      {plainTextSourceName}
-                    </span>
-                  </span>
-                </p>
-              ) : null}
-              {!pendingPdfFile && !plainTextSourceName ? (
-                <p className="text-sm text-zinc-500 dark:text-zinc-400">
-                  No file selected · .txt, .md, or .pdf (max {MAX_UPLOAD_MB} MB)
-                </p>
-              ) : null}
-            </div>
-          </div>
-        ) : (
-          <div
-            className="flex flex-col gap-3 rounded-xl border border-zinc-200 bg-zinc-50/80 p-3 dark:border-zinc-700 dark:bg-zinc-950/50 sm:flex-row sm:items-center sm:gap-0 sm:p-2 sm:pr-4"
-            aria-hidden="true"
+      <section className="flex min-w-0 flex-col gap-4 rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm sm:p-6 dark:border-zinc-800 dark:bg-zinc-900/40">
+        <div className="flex w-full min-w-0 flex-col gap-3 rounded-xl border border-zinc-200 bg-zinc-50/80 p-3 dark:border-zinc-700 dark:bg-zinc-950/50 sm:flex-row sm:items-stretch sm:gap-4 sm:p-3 sm:pr-4">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".pdf,application/pdf"
+            onChange={onFileChange}
+            className="sr-only"
+            aria-label="Upload a PDF file"
+          />
+          <button
+            type="button"
+            onClick={() => {
+              fileInputRef.current?.click();
+            }}
+            className="inline-flex h-11 w-full min-h-11 shrink-0 items-center justify-center rounded-lg bg-emerald-600 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700 active:bg-emerald-800 dark:bg-emerald-500 dark:hover:bg-emerald-600 dark:active:bg-emerald-700 sm:h-auto sm:w-auto sm:min-h-10 sm:self-center sm:py-2 sm:pl-4 sm:pr-4"
           >
-            <div className="h-10 w-[7.25rem] shrink-0 rounded-lg bg-zinc-200 dark:bg-zinc-700" />
-            <div className="min-h-10 flex flex-1 items-center border-t border-zinc-200 pt-3 sm:border-t-0 sm:border-l sm:pl-4 sm:pt-0 dark:border-zinc-700">
-              <div className="h-4 w-full max-w-md rounded bg-zinc-200 dark:bg-zinc-700" />
-            </div>
+            Choose file
+          </button>
+          <div className="flex min-h-10 min-w-0 flex-1 items-center border-t border-zinc-200 pt-3 sm:border-t-0 sm:border-l sm:pl-4 sm:pt-0 dark:border-zinc-700">
+            {pendingPdfFile ? (
+              <p className="flex w-full min-w-0 flex-row flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+                <span className="shrink-0 rounded-md bg-emerald-100 px-2 py-0.5 text-xs font-semibold uppercase tracking-wide text-emerald-900 dark:bg-emerald-950/80 dark:text-emerald-300">
+                  PDF
+                </span>
+                <span className="min-w-0 max-w-full break-words font-medium text-zinc-900 sm:truncate dark:text-zinc-100">
+                  {pendingPdfFile.name}
+                </span>
+              </p>
+            ) : (
+              <p className="text-pretty text-xs leading-relaxed text-zinc-500 sm:text-sm dark:text-zinc-400">
+                No file selected · PDF only (max {MAX_UPLOAD_MB} MB)
+              </p>
+            )}
           </div>
-        )}
+        </div>
         <label
           className="text-sm font-medium text-zinc-800 dark:text-zinc-200"
           htmlFor="mcq-text"
@@ -262,14 +208,13 @@ export function McqAnalyzerClient() {
           value={testText}
           onChange={(e) => {
             setPendingPdfFile(null);
-            setPlainTextSourceName(null);
             setTestText(e.target.value);
           }}
-          rows={14}
-          placeholder="Paste full exam text, or pick a PDF."
-          className="min-h-55 w-full resize-y rounded-xl border border-zinc-200 bg-zinc-50 p-4 font-mono text-sm leading-relaxed text-zinc-900 outline-none ring-emerald-600/0 transition focus:border-emerald-600 focus:ring-4 focus:ring-emerald-600/15 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-emerald-500"
+          rows={12}
+          placeholder="Paste full exam text, or upload a PDF."
+          className="field-sizing-content min-h-44 w-full min-w-0 resize-y rounded-xl border border-zinc-200 bg-zinc-50 p-3 font-mono text-sm leading-relaxed text-zinc-900 outline-none ring-emerald-600/0 transition focus:border-emerald-600 focus:ring-4 focus:ring-emerald-600/15 sm:min-h-55 sm:p-4 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-emerald-500"
         />
-        <div className="flex flex-wrap items-center gap-3">
+        <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
           <button
             type="button"
             onClick={() => {
@@ -277,11 +222,9 @@ export function McqAnalyzerClient() {
             }}
             disabled={loading || !hasMcqInput}
             title={
-              hasMcqInput
-                ? undefined
-                : "Paste your test or upload a .txt, .md, or .pdf file first."
+              hasMcqInput ? undefined : "Paste your test or upload a PDF first."
             }
-            className="inline-flex items-center justify-center rounded-xl bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-emerald-500 dark:hover:bg-emerald-600"
+            className="inline-flex h-11 min-h-11 w-full items-center justify-center rounded-xl bg-emerald-600 px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700 active:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-60 sm:h-auto sm:w-auto sm:min-h-10 sm:py-2.5 dark:bg-emerald-500 dark:hover:bg-emerald-600 dark:active:bg-emerald-700"
           >
             {loading ? "Reviewing…" : "Submit"}
           </button>
@@ -291,7 +234,7 @@ export function McqAnalyzerClient() {
               onClick={() => {
                 downloadPdfFromBase64(success.pdfBase64, success.pdfFileName);
               }}
-              className="inline-flex items-center justify-center rounded-xl border border-zinc-300 bg-white px-5 py-2.5 text-sm font-semibold text-zinc-900 shadow-sm transition hover:bg-zinc-50 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800"
+              className="inline-flex h-11 min-h-11 w-full items-center justify-center rounded-xl border border-zinc-300 bg-white px-5 text-sm font-semibold text-zinc-900 shadow-sm transition hover:bg-zinc-50 active:bg-zinc-100 sm:h-auto sm:w-auto sm:min-h-10 sm:py-2.5 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800 dark:active:bg-zinc-700"
             >
               Download PDF
             </button>
@@ -308,18 +251,18 @@ export function McqAnalyzerClient() {
       </section>
 
       {success ? (
-        <section className="flex flex-col gap-6">
+        <section className="flex min-w-0 flex-col gap-6">
           <div className="overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900/40">
-            <div className="flex flex-col gap-3 border-b border-zinc-200 bg-gradient-to-r from-emerald-50/90 to-zinc-50 px-5 py-4 dark:border-zinc-800 dark:from-emerald-950/35 dark:to-zinc-950/80 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <h2 className="text-lg font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
+            <div className="flex flex-col gap-3 border-b border-zinc-200 bg-gradient-to-r from-emerald-50/90 to-zinc-50 px-4 py-4 dark:border-zinc-800 dark:from-emerald-950/35 dark:to-zinc-950/80 sm:flex-row sm:items-center sm:justify-between sm:px-5">
+              <div className="min-w-0">
+                <h2 className="text-base font-semibold tracking-tight text-zinc-900 sm:text-lg dark:text-zinc-50">
                   Summary
                 </h2>
                 <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
                   Review run metadata
                 </p>
               </div>
-              <p className="inline-flex w-fit items-center rounded-full border border-emerald-200/80 bg-white/90 px-3 py-1 text-xs font-semibold text-emerald-800 shadow-sm dark:border-emerald-800/60 dark:bg-zinc-900/90 dark:text-emerald-300">
+              <p className="inline-flex w-full max-w-full items-center justify-center rounded-full border border-emerald-200/80 bg-white/90 px-3 py-2 text-center text-xs font-semibold text-emerald-800 shadow-sm sm:w-fit sm:justify-center sm:py-1 dark:border-emerald-800/60 dark:bg-zinc-900/90 dark:text-emerald-300">
                 {success.result.evaluations.length}{" "}
                 {success.result.evaluations.length === 1
                   ? "question"
@@ -327,7 +270,7 @@ export function McqAnalyzerClient() {
                 reviewed
               </p>
             </div>
-            <dl className="grid gap-3 p-5 sm:grid-cols-3 sm:gap-4">
+            <dl className="grid min-w-0 gap-3 p-4 sm:grid-cols-3 sm:gap-4 sm:p-5">
               <div className="rounded-xl border border-zinc-100 bg-zinc-50/80 px-4 py-3 dark:border-zinc-800 dark:bg-zinc-950/50">
                 <dt className="text-[0.65rem] font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
                   Model
@@ -364,7 +307,7 @@ export function McqAnalyzerClient() {
               </div>
             </dl>
             {success.result.inputIncompleteMessage ? (
-              <div className="border-t border-zinc-200 bg-amber-50/80 px-5 py-4 dark:border-zinc-800 dark:bg-amber-950/25">
+              <div className="border-t border-zinc-200 bg-amber-50/80 px-4 py-4 sm:px-5 dark:border-zinc-800 dark:bg-amber-950/25">
                 <p className="text-xs font-semibold uppercase tracking-wide text-amber-900 dark:text-amber-200">
                   Note
                 </p>
@@ -380,12 +323,12 @@ export function McqAnalyzerClient() {
               return (
                 <article
                   key={`${ev.index}-${ev.questionText.slice(0, 24)}`}
-                  className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-900/40"
+                  className="min-w-0 rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm sm:p-6 dark:border-zinc-800 dark:bg-zinc-900/40"
                 >
-                  <h3 className="text-base font-semibold text-emerald-800 dark:text-emerald-300">
+                  <h3 className="text-sm font-semibold text-emerald-800 sm:text-base dark:text-emerald-300">
                     Question {ev.index + 1}
                   </h3>
-                  <p className="mt-3 whitespace-pre-wrap text-sm leading-relaxed text-zinc-800 dark:text-zinc-200">
+                  <p className="mt-3 whitespace-pre-wrap break-words text-sm leading-relaxed text-zinc-800 dark:text-zinc-200">
                     {ev.questionText}
                   </p>
                   <div className="mt-4">
@@ -397,7 +340,7 @@ export function McqAnalyzerClient() {
                         return (
                           <li
                             key={`${ev.index}-${opt.label}`}
-                            className="rounded-lg bg-zinc-50 px-3 py-2 text-sm dark:bg-zinc-950/60"
+                            className="min-w-0 rounded-lg bg-zinc-50 px-3 py-2 text-sm break-words dark:bg-zinc-950/60"
                           >
                             <span className="font-semibold text-zinc-700 dark:text-zinc-300">
                               {opt.label}.
@@ -422,7 +365,7 @@ export function McqAnalyzerClient() {
                     <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
                       Explanation
                     </p>
-                    <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">
+                    <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">
                       {ev.explanation}
                     </p>
                   </div>

@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "ts": "npx tsc --noEmit --watch",
     "start": "next start",
     "lint": "biome check",
     "format": "biome format --write"

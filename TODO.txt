@@ -1,2 +1,3 @@
 - Streaming the response
 - Persist the response (or chat)
+- Scroll to answer section when ai completes its task
