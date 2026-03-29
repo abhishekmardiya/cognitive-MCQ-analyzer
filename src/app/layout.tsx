@@ -12,10 +12,31 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+function resolveMetadataBase(): URL {
+  return new URL("cognitive-mcq-analyzer.vercel.app");
+}
+
+const description =
+  "Upload or paste MCQ tests for Gemini-powered evaluation, detailed explanations, and a downloadable PDF report.";
+
 export const metadata: Metadata = {
+  metadataBase: resolveMetadataBase(),
   title: "Cognitive MCQ Analyzer",
-  description:
-    "Upload or paste MCQ tests for Gemini-powered evaluation, detailed explanations, and a downloadable PDF report.",
+  description,
+  robots: {
+    index: true,
+    follow: true,
+  },
+  openGraph: {
+    title: "Cognitive MCQ Analyzer",
+    description,
+    type: "website",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Cognitive MCQ Analyzer",
+    description,
+  },
 };
 
 export default function RootLayout({
