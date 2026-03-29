@@ -37,7 +37,7 @@ export function fixIndicPdfExtractionArtifacts(input: string): string {
 }
 
 export function fixIndicInEvaluationResult(
-  result: McqEvaluationResult
+  result: McqEvaluationResult,
 ): McqEvaluationResult {
   const fix = fixIndicPdfExtractionArtifacts;
   return {

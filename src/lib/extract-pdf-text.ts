@@ -16,7 +16,7 @@ export function shouldParseAsPdf(buffer: Buffer, fileName: string): boolean {
 }
 
 export async function extractTextFromPdfBuffer(
-  buffer: Buffer
+  buffer: Buffer,
 ): Promise<string> {
   const { PDFParse } = await import("pdf-parse");
   const data = new Uint8Array(buffer.length);

@@ -5,6 +5,7 @@ import {
   type ChangeEvent,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
 } from "react";
@@ -14,20 +15,17 @@ import {
   inputStatusLabel,
   sortEvaluations,
 } from "@/lib/mcq-eval-display";
+import type { EvaluateSuccess } from "@/lib/mcq-evaluate-success";
+import {
+  addMcqHistorySession,
+  deleteMcqHistorySession,
+  deriveMcqHistorySourceLabel,
+  isMcqHistoryIdbAvailable,
+  listMcqHistorySessions,
+  type McqHistorySession,
+} from "@/lib/mcq-history-idb";
 import type { McqEvaluation, McqEvaluationResult } from "@/lib/mcq-schemas";
 import { MAX_UPLOAD_BYTES, MAX_UPLOAD_MB } from "@/lib/upload-limits";
-
-type EvaluateSuccess = {
-  result: McqEvaluationResult;
-  pdfBase64: string;
-  pdfFileName: string;
-  meta: {
-    title: string;
-    generatedAt: string;
-    model: string;
-    modelsAttempted: string[];
-  };
-};
 
 type EvaluateErrorBody = {
   error: string;
@@ -46,13 +44,13 @@ type NdjsonEvent =
   | { type: "error"; error: string };
 
 function sortPartialEvaluations(
-  list: (DeepPartial<McqEvaluation> | undefined)[] | undefined
+  list: (DeepPartial<McqEvaluation> | undefined)[] | undefined,
 ): DeepPartial<McqEvaluation>[] {
   if (!Array.isArray(list)) {
     return [];
   }
   const defined = list.filter(
-    (x): x is DeepPartial<McqEvaluation> => x !== undefined
+    (x): x is DeepPartial<McqEvaluation> => x !== undefined,
   );
   return [...defined].sort((a, b) => {
     return (Number(a.index) || 0) - (Number(b.index) || 0);
@@ -86,6 +84,26 @@ function isPdfFile(file: File): boolean {
   return false;
 }
 
+const PAGE_SCROLL_BOTTOM_THRESHOLD_PX = 80;
+
+function getPageScrollMetrics(): {
+  scrollTop: number;
+  viewport: number;
+  scrollHeight: number;
+} {
+  const de = document.documentElement;
+  const body = document.body;
+  const scrollTop = window.scrollY;
+  const viewport = window.innerHeight;
+  const scrollHeight = Math.max(de.scrollHeight, body ? body.scrollHeight : 0);
+  return { scrollTop, viewport, scrollHeight };
+}
+
+function isPageNearBottom(thresholdPx: number): boolean {
+  const { scrollTop, viewport, scrollHeight } = getPageScrollMetrics();
+  return scrollHeight - scrollTop - viewport <= thresholdPx;
+}
+
 function blobToBase64Payload(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -114,29 +132,113 @@ export function McqAnalyzerClient() {
   const [partialResult, setPartialResult] =
     useState<DeepPartial<McqEvaluationResult> | null>(null);
   const [streamStatus, setStreamStatus] = useState<string | null>(null);
+  const [historyItems, setHistoryItems] = useState<McqHistorySession[]>([]);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [historyPdfNotice, setHistoryPdfNotice] = useState<string | null>(null);
+  const [historyDeleteTarget, setHistoryDeleteTarget] =
+    useState<McqHistorySession | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const answersSectionRef = useRef<HTMLElement>(null);
+  const stickToBottomRef = useRef(true);
+  const suppressScrollHandlerRef = useRef(false);
+  const hadPartialThisRunRef = useRef(false);
 
-  useEffect(() => {
-    if (success === null) {
+  const refreshHistory = useCallback(async () => {
+    if (!isMcqHistoryIdbAvailable()) {
       return;
     }
-    const id = requestAnimationFrame(() => {
-      answersSectionRef.current?.scrollIntoView({
-        behavior: "smooth",
-        block: "start",
+    try {
+      const list = await listMcqHistorySessions();
+      setHistoryItems(list);
+      setHistoryError(null);
+    } catch {
+      setHistoryError("Could not load review history from this browser.");
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshHistory();
+  }, [refreshHistory]);
+
+  const persistSuccessToHistory = useCallback(
+    async (ok: EvaluateSuccess) => {
+      if (!isMcqHistoryIdbAvailable()) {
+        return;
+      }
+      const sourceLabel = deriveMcqHistorySourceLabel({
+        pdfFileName: pendingPdfFile?.name ?? null,
+        pastedText: testText,
       });
-    });
-    return () => {
-      cancelAnimationFrame(id);
+      try {
+        const { pdfOmitted } = await addMcqHistorySession({
+          sourceLabel,
+          success: ok,
+        });
+        if (pdfOmitted) {
+          setHistoryPdfNotice(
+            "This run was saved without the PDF file — storage is full. Download the report now if you still need it.",
+          );
+        } else {
+          setHistoryPdfNotice(null);
+        }
+        await refreshHistory();
+      } catch {
+        setHistoryError("Could not save this review to browser history.");
+      }
+    },
+    [pendingPdfFile, testText, refreshHistory],
+  );
+
+  const openHistorySession = useCallback((session: McqHistorySession) => {
+    setError(null);
+    setPartialResult(null);
+    setStreamStatus(null);
+    stickToBottomRef.current = false;
+    hadPartialThisRunRef.current = false;
+    setSuccess(session.success);
+    if (session.pdfOmitted === true) {
+      setHistoryPdfNotice(
+        "This saved session has no PDF — only questions and explanations are stored.",
+      );
+    } else {
+      setHistoryPdfNotice(null);
+    }
+  }, []);
+
+  const removeHistorySession = useCallback(
+    async (id: string) => {
+      try {
+        await deleteMcqHistorySession(id);
+        setHistoryError(null);
+        await refreshHistory();
+      } catch {
+        setHistoryError("Could not delete that history entry.");
+      }
+    },
+    [refreshHistory],
+  );
+
+  useEffect(() => {
+    if (historyDeleteTarget === null) {
+      return;
+    }
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setHistoryDeleteTarget(null);
+      }
     };
-  }, [success]);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [historyDeleteTarget]);
 
   const onSubmit = useCallback(async () => {
     setError(null);
     setSuccess(null);
     setPartialResult(null);
     setStreamStatus(null);
+    setHistoryPdfNotice(null);
     const trimmed = testText.trim();
     if (pendingPdfFile === null && trimmed.length === 0) {
       setError("Paste your test or upload a PDF before running the review.");
@@ -147,6 +249,8 @@ export function McqAnalyzerClient() {
       return;
     }
     setLoading(true);
+    stickToBottomRef.current = true;
+    hadPartialThisRunRef.current = false;
     try {
       let response: Response;
       if (pendingPdfFile !== null) {
@@ -179,6 +283,7 @@ export function McqAnalyzerClient() {
         }
         const ok = data as EvaluateSuccess;
         setSuccess(ok);
+        void persistSuccessToHistory(ok);
         return;
       }
 
@@ -218,17 +323,20 @@ export function McqAnalyzerClient() {
             break;
           }
           if (evt.type === "partial") {
+            hadPartialThisRunRef.current = true;
             setPartialResult(evt.data);
             setStreamStatus(null);
           } else if (evt.type === "status") {
             setStreamStatus(evt.message);
           } else if (evt.type === "complete") {
-            setSuccess({
+            const completed: EvaluateSuccess = {
               result: evt.result,
               pdfBase64: evt.pdfBase64,
               pdfFileName: evt.pdfFileName,
               meta: evt.meta,
-            });
+            };
+            setSuccess(completed);
+            void persistSuccessToHistory(completed);
             setPartialResult(null);
             setStreamStatus(null);
           } else if (evt.type === "error") {
@@ -249,12 +357,12 @@ export function McqAnalyzerClient() {
       setError(
         msg.includes("Could not read")
           ? msg
-          : "Network error. Check your connection and try again."
+          : "Network error. Check your connection and try again.",
       );
     } finally {
       setLoading(false);
     }
-  }, [pendingPdfFile, testText]);
+  }, [pendingPdfFile, testText, persistSuccessToHistory]);
 
   const onFileChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -288,275 +396,503 @@ export function McqAnalyzerClient() {
   const summaryResult = success?.result ?? partialResult;
   const inputStatusLive = summaryResult?.inputStatus;
 
+  useLayoutEffect(() => {
+    if (!streamingIncomplete || partialResult === null) {
+      return;
+    }
+    if (!stickToBottomRef.current) {
+      return;
+    }
+    suppressScrollHandlerRef.current = true;
+    window.scrollTo({
+      top: getPageScrollMetrics().scrollHeight,
+      behavior: "auto",
+    });
+    requestAnimationFrame(() => {
+      suppressScrollHandlerRef.current = false;
+    });
+  }, [partialResult, streamingIncomplete]);
+
+  useLayoutEffect(() => {
+    if (success === null || partialResult !== null) {
+      return;
+    }
+    if (hadPartialThisRunRef.current) {
+      if (!stickToBottomRef.current) {
+        return;
+      }
+      suppressScrollHandlerRef.current = true;
+      window.scrollTo({
+        top: getPageScrollMetrics().scrollHeight,
+        behavior: "auto",
+      });
+      requestAnimationFrame(() => {
+        suppressScrollHandlerRef.current = false;
+      });
+      return;
+    }
+    const id = requestAnimationFrame(() => {
+      answersSectionRef.current?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+    });
+    return () => {
+      cancelAnimationFrame(id);
+    };
+  }, [success, partialResult]);
+
+  useEffect(() => {
+    if (!streamingIncomplete) {
+      return;
+    }
+    const onScroll = () => {
+      if (suppressScrollHandlerRef.current) {
+        return;
+      }
+      stickToBottomRef.current = isPageNearBottom(
+        PAGE_SCROLL_BOTTOM_THRESHOLD_PX,
+      );
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    onScroll();
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+    };
+  }, [streamingIncomplete]);
+
   return (
-    <>
-      <section className="flex min-w-0 flex-col gap-4 rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm sm:p-6 dark:border-zinc-800 dark:bg-zinc-900/40">
-        <div className="flex w-full min-w-0 flex-col gap-3 rounded-xl border border-zinc-200 bg-zinc-50/80 p-3 dark:border-zinc-700 dark:bg-zinc-950/50 sm:flex-row sm:items-stretch sm:gap-4 sm:p-3 sm:pr-4">
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".pdf,application/pdf"
-            onChange={onFileChange}
-            className="sr-only"
-            aria-label="Upload a PDF file"
-          />
-          <button
-            type="button"
-            onClick={() => {
-              fileInputRef.current?.click();
-            }}
-            className="inline-flex h-11 w-full min-h-11 shrink-0 items-center justify-center rounded-lg bg-emerald-600 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700 active:bg-emerald-800 dark:bg-emerald-500 dark:hover:bg-emerald-600 dark:active:bg-emerald-700 sm:h-auto sm:w-auto sm:min-h-10 sm:self-center sm:py-2 sm:pl-4 sm:pr-4"
-          >
-            Choose file
-          </button>
-          <div className="flex min-h-10 min-w-0 flex-1 items-center border-t border-zinc-200 pt-3 sm:border-t-0 sm:border-l sm:pl-4 sm:pt-0 dark:border-zinc-700">
-            {pendingPdfFile ? (
-              <p className="flex w-full min-w-0 flex-row flex-wrap items-center gap-x-2 gap-y-1 text-sm">
-                <span className="shrink-0 rounded-md bg-emerald-100 px-2 py-0.5 text-xs font-semibold uppercase tracking-wide text-emerald-900 dark:bg-emerald-950/80 dark:text-emerald-300">
-                  PDF
-                </span>
-                <span className="min-w-0 max-w-full break-words font-medium text-zinc-900 sm:truncate dark:text-zinc-100">
-                  {pendingPdfFile.name}
-                </span>
-              </p>
-            ) : (
-              <p className="text-pretty text-xs leading-relaxed text-zinc-500 sm:text-sm dark:text-zinc-400">
-                No file selected · PDF only (max {MAX_UPLOAD_MB} MB)
-              </p>
-            )}
-          </div>
-        </div>
-        <label
-          className="text-sm font-medium text-zinc-800 dark:text-zinc-200"
-          htmlFor="mcq-text"
-        >
-          Questions and options
-        </label>
-        <textarea
-          id="mcq-text"
-          value={testText}
-          onChange={(e) => {
-            setPendingPdfFile(null);
-            setTestText(e.target.value);
-          }}
-          rows={12}
-          placeholder="Paste full exam text, or upload a PDF."
-          className="field-sizing-content max-h-[min(28rem,60vh)] min-h-44 w-full min-w-0 resize-y overflow-x-auto overflow-y-auto rounded-xl border border-zinc-200 bg-zinc-50 p-3 font-mono text-sm leading-relaxed text-zinc-900 outline-none ring-emerald-600/0 transition focus:border-emerald-600 focus:ring-4 focus:ring-emerald-600/15 sm:min-h-55 sm:p-4 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-emerald-500"
-        />
-        <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
-          <button
-            type="button"
-            onClick={() => {
-              void onSubmit();
-            }}
-            disabled={loading || !hasMcqInput}
-            title={
-              hasMcqInput ? undefined : "Paste your test or upload a PDF first."
-            }
-            className="inline-flex h-11 min-h-11 w-full items-center justify-center rounded-xl bg-emerald-600 px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700 active:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-60 sm:h-auto sm:w-auto sm:min-h-10 sm:py-2.5 dark:bg-emerald-500 dark:hover:bg-emerald-600 dark:active:bg-emerald-700"
-          >
-            {loading
-              ? partialResult !== null
-                ? "Streaming results…"
-                : "Reviewing…"
-              : "Submit"}
-          </button>
-          {success ? (
+    <div className="flex w-full min-w-0 flex-col gap-8 lg:flex-row lg:items-start lg:gap-8">
+      <div className="flex min-w-0 flex-1 flex-col gap-8">
+        <section className="flex min-w-0 flex-col gap-4 rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm sm:p-6 dark:border-zinc-800 dark:bg-zinc-900/40">
+          <div className="flex w-full min-w-0 flex-col gap-3 rounded-xl border border-zinc-200 bg-zinc-50/80 p-3 dark:border-zinc-700 dark:bg-zinc-950/50 sm:flex-row sm:items-stretch sm:gap-4 sm:p-3 sm:pr-4">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".pdf,application/pdf"
+              onChange={onFileChange}
+              className="sr-only"
+              aria-label="Upload a PDF file"
+            />
             <button
               type="button"
               onClick={() => {
-                downloadPdfFromBase64(success.pdfBase64, success.pdfFileName);
+                fileInputRef.current?.click();
               }}
-              className="inline-flex h-11 min-h-11 w-full items-center justify-center rounded-xl border border-zinc-300 bg-white px-5 text-sm font-semibold text-zinc-900 shadow-sm transition hover:bg-zinc-50 active:bg-zinc-100 sm:h-auto sm:w-auto sm:min-h-10 sm:py-2.5 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800 dark:active:bg-zinc-700"
+              className="inline-flex h-11 w-full min-h-11 shrink-0 items-center justify-center rounded-lg bg-emerald-600 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700 active:bg-emerald-800 dark:bg-emerald-500 dark:hover:bg-emerald-600 dark:active:bg-emerald-700 sm:h-auto sm:w-auto sm:min-h-10 sm:self-center sm:py-2 sm:pl-4 sm:pr-4"
             >
-              Download PDF
+              Choose file
             </button>
+            <div className="flex min-h-10 min-w-0 flex-1 items-center border-t border-zinc-200 pt-3 sm:border-t-0 sm:border-l sm:pl-4 sm:pt-0 dark:border-zinc-700">
+              {pendingPdfFile ? (
+                <p className="flex w-full min-w-0 flex-row flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+                  <span className="shrink-0 rounded-md bg-emerald-100 px-2 py-0.5 text-xs font-semibold uppercase tracking-wide text-emerald-900 dark:bg-emerald-950/80 dark:text-emerald-300">
+                    PDF
+                  </span>
+                  <span className="min-w-0 max-w-full wrap-break-word font-medium text-zinc-900 sm:truncate dark:text-zinc-100">
+                    {pendingPdfFile.name}
+                  </span>
+                </p>
+              ) : (
+                <p className="text-pretty text-xs leading-relaxed text-zinc-500 sm:text-sm dark:text-zinc-400">
+                  No file selected · PDF only (max {MAX_UPLOAD_MB} MB)
+                </p>
+              )}
+            </div>
+          </div>
+          <label
+            className="text-sm font-medium text-zinc-800 dark:text-zinc-200"
+            htmlFor="mcq-text"
+          >
+            Questions and options
+          </label>
+          <textarea
+            id="mcq-text"
+            value={testText}
+            onChange={(e) => {
+              setPendingPdfFile(null);
+              setTestText(e.target.value);
+            }}
+            rows={12}
+            placeholder="Paste full exam text, or upload a PDF."
+            className="field-sizing-content max-h-[min(28rem,60vh)] min-h-44 w-full min-w-0 resize-y overflow-x-auto overflow-y-auto rounded-xl border border-zinc-200 bg-zinc-50 p-3 font-mono text-sm leading-relaxed text-zinc-900 outline-none ring-emerald-600/0 transition focus:border-emerald-600 focus:ring-4 focus:ring-emerald-600/15 sm:min-h-55 sm:p-4 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-emerald-500"
+          />
+          <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+            <button
+              type="button"
+              onClick={() => {
+                void onSubmit();
+              }}
+              disabled={loading || !hasMcqInput}
+              title={
+                hasMcqInput
+                  ? undefined
+                  : "Paste your test or upload a PDF first."
+              }
+              className="inline-flex h-11 min-h-11 w-full items-center justify-center rounded-xl bg-emerald-600 px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700 active:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-60 sm:h-auto sm:w-auto sm:min-h-10 sm:py-2.5 dark:bg-emerald-500 dark:hover:bg-emerald-600 dark:active:bg-emerald-700"
+            >
+              {loading
+                ? partialResult !== null
+                  ? "Streaming results…"
+                  : "Reviewing…"
+                : "Submit"}
+            </button>
+          </div>
+          {streamStatus ? (
+            <output className="block text-sm text-zinc-600 dark:text-zinc-400">
+              {streamStatus}
+            </output>
           ) : null}
-        </div>
-        {streamStatus ? (
-          <output className="block text-sm text-zinc-600 dark:text-zinc-400">
-            {streamStatus}
-          </output>
+          {error ? (
+            <p
+              className="whitespace-pre-wrap wrap-break-word rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-900 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-100"
+              role="alert"
+            >
+              {error}
+            </p>
+          ) : null}
+          {historyPdfNotice ? (
+            <output className="text-pretty block rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-100">
+              {historyPdfNotice}
+            </output>
+          ) : null}
+        </section>
+
+        {showResults ? (
+          <section
+            ref={answersSectionRef}
+            id="mcq-results"
+            className="flex min-w-0 scroll-mt-6 flex-col gap-6"
+            aria-busy={streamingIncomplete}
+            aria-live={streamingIncomplete ? "polite" : undefined}
+          >
+            <div className="overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900/40">
+              <div className="flex flex-col gap-3 border-b border-zinc-200 bg-linear-to-r from-emerald-50/90 to-zinc-50 px-4 py-4 dark:border-zinc-800 dark:from-emerald-950/35 dark:to-zinc-950/80 sm:flex-row sm:items-center sm:justify-between sm:px-5">
+                <div className="min-w-0">
+                  <h2 className="text-base font-semibold tracking-tight text-zinc-900 sm:text-lg dark:text-zinc-50">
+                    Summary
+                  </h2>
+                  <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
+                    {streamingIncomplete
+                      ? "Partial results appear as the model generates them."
+                      : "Review run metadata"}
+                  </p>
+                </div>
+                <div className="flex w-full min-w-0 flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center sm:justify-end sm:gap-3">
+                  <p className="inline-flex w-full max-w-full items-center justify-center rounded-full border border-emerald-200/80 bg-white/90 px-3 py-2 text-center text-xs font-semibold text-emerald-800 shadow-sm sm:w-fit sm:justify-center sm:py-1 dark:border-emerald-800/60 dark:bg-zinc-900/90 dark:text-emerald-300">
+                    {evaluationsForList.length}{" "}
+                    {evaluationsForList.length === 1 ? "question" : "questions"}{" "}
+                    {streamingIncomplete ? "so far" : "reviewed"}
+                  </p>
+                  {success ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        downloadPdfFromBase64(
+                          success.pdfBase64,
+                          success.pdfFileName,
+                        );
+                      }}
+                      disabled={success.pdfBase64.length === 0}
+                      title={
+                        success.pdfBase64.length === 0
+                          ? "PDF was not stored for this session."
+                          : undefined
+                      }
+                      className="inline-flex h-11 min-h-11 w-full shrink-0 items-center justify-center gap-2 rounded-xl bg-emerald-600 px-5 text-sm font-semibold text-white shadow-md shadow-emerald-900/25 ring-1 ring-emerald-400/40 transition hover:bg-emerald-500 hover:shadow-lg hover:shadow-emerald-900/30 active:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50 disabled:shadow-none sm:h-auto sm:w-auto sm:min-h-10 sm:py-2.5 dark:bg-emerald-500 dark:ring-emerald-300/30 dark:hover:bg-emerald-400 dark:active:bg-emerald-600"
+                    >
+                      <svg
+                        className="size-4 shrink-0 opacity-95"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden="true"
+                      >
+                        <title>Download</title>
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                        <polyline points="7 10 12 15 17 10" />
+                        <line x1="12" x2="12" y1="15" y2="3" />
+                      </svg>
+                      Download PDF
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+              <dl className="grid min-w-0 gap-3 p-4 sm:grid-cols-3 sm:gap-4 sm:p-5">
+                <div className="rounded-xl border border-zinc-100 bg-zinc-50/80 px-4 py-3 dark:border-zinc-800 dark:bg-zinc-950/50">
+                  <dt className="text-[0.65rem] font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
+                    Model
+                  </dt>
+                  <dd className="mt-1.5 break-all font-mono text-sm font-medium text-zinc-900 dark:text-zinc-100">
+                    {success !== null ? success.meta.model : "Streaming…"}
+                  </dd>
+                  {success !== null &&
+                  success.meta.modelsAttempted.length > 1 ? (
+                    <dd className="mt-2 text-xs leading-relaxed text-zinc-500 dark:text-zinc-400">
+                      Fallback chain: {success.meta.modelsAttempted.join(" → ")}{" "}
+                      (earlier models hit quota, rate limits, or overload).
+                    </dd>
+                  ) : null}
+                </div>
+                <div className="rounded-xl border border-zinc-100 bg-zinc-50/80 px-4 py-3 dark:border-zinc-800 dark:bg-zinc-950/50">
+                  <dt className="text-[0.65rem] font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
+                    Generated
+                  </dt>
+                  <dd className="mt-1.5 text-sm font-medium text-zinc-900 dark:text-zinc-100">
+                    {success !== null
+                      ? formatGeneratedTimestampIst(success.meta.generatedAt)
+                      : "—"}
+                  </dd>
+                </div>
+                <div className="rounded-xl border border-zinc-100 bg-zinc-50/80 px-4 py-3 dark:border-zinc-800 dark:bg-zinc-950/50">
+                  <dt className="text-[0.65rem] font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
+                    Input status
+                  </dt>
+                  <dd className="mt-1.5">
+                    {inputStatusLive === "complete" ||
+                    inputStatusLive === "incomplete" ? (
+                      <span
+                        className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-semibold capitalize ${inputStatusBadgeClasses(inputStatusLive)}`}
+                      >
+                        {inputStatusLabel(inputStatusLive)}
+                      </span>
+                    ) : (
+                      <span className="inline-flex rounded-full bg-zinc-200/90 px-2.5 py-0.5 text-xs font-semibold text-zinc-700 dark:bg-zinc-800 dark:text-zinc-200">
+                        Streaming…
+                      </span>
+                    )}
+                  </dd>
+                </div>
+              </dl>
+              {typeof summaryResult?.inputIncompleteMessage === "string" &&
+              summaryResult.inputIncompleteMessage.length > 0 ? (
+                <div className="border-t border-zinc-200 bg-amber-50/80 px-4 py-4 sm:px-5 dark:border-zinc-800 dark:bg-amber-950/25">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-amber-900 dark:text-amber-200">
+                    Note
+                  </p>
+                  <p className="mt-1 text-sm leading-relaxed text-amber-950 dark:text-amber-100">
+                    {summaryResult.inputIncompleteMessage}
+                  </p>
+                </div>
+              ) : null}
+            </div>
+
+            <div className="flex flex-col gap-8">
+              {evaluationsForList.map((ev, idx) => {
+                const qIndex = typeof ev.index === "number" ? ev.index : idx;
+                const stem =
+                  typeof ev.questionText === "string"
+                    ? ev.questionText
+                    : "Receiving question text…";
+                const stemKey =
+                  typeof ev.questionText === "string"
+                    ? ev.questionText.slice(0, 24)
+                    : `p-${idx}`;
+                const rawOptions = Array.isArray(ev.options) ? ev.options : [];
+                const options = rawOptions.filter(
+                  (o): o is NonNullable<(typeof rawOptions)[number]> =>
+                    o != null,
+                );
+                const correct =
+                  typeof ev.correctAnswerLabel === "string"
+                    ? ev.correctAnswerLabel
+                    : "…";
+                const expl =
+                  typeof ev.explanation === "string"
+                    ? ev.explanation
+                    : "Receiving explanation…";
+                return (
+                  <article
+                    key={`${qIndex}-${stemKey}`}
+                    className={`min-w-0 rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm sm:p-6 dark:border-zinc-800 dark:bg-zinc-900/40 ${streamingIncomplete ? "ring-1 ring-emerald-500/15" : ""}`}
+                  >
+                    <h3 className="text-sm font-semibold text-emerald-800 sm:text-base dark:text-emerald-300">
+                      Question {qIndex + 1}
+                    </h3>
+                    <p className="mt-3 whitespace-pre-wrap wrap-break-word text-sm leading-relaxed text-zinc-800 dark:text-zinc-200">
+                      {stem}
+                    </p>
+                    <div className="mt-4">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                        Options
+                      </p>
+                      <ul className="mt-2 flex flex-col gap-2">
+                        {options.map((opt) => {
+                          const label =
+                            typeof opt.label === "string" ? opt.label : "?";
+                          const text =
+                            typeof opt.text === "string"
+                              ? opt.text
+                              : "Receiving option…";
+                          const optKey = `${qIndex}-${label}-${text.slice(0, 48)}`;
+                          return (
+                            <li
+                              key={optKey}
+                              className="min-w-0 rounded-lg bg-zinc-50 px-3 py-2 text-sm wrap-break-word dark:bg-zinc-950/60"
+                            >
+                              <span className="font-semibold text-zinc-700 dark:text-zinc-300">
+                                {label}.
+                              </span>{" "}
+                              <span className="text-zinc-800 dark:text-zinc-200">
+                                {text}
+                              </span>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </div>
+                    <div className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50/80 px-4 py-3 dark:border-emerald-900/50 dark:bg-emerald-950/30">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-emerald-900 dark:text-emerald-200">
+                        Correct answer
+                      </p>
+                      <p className="mt-1 text-sm font-semibold text-emerald-950 dark:text-emerald-100">
+                        {correct}
+                      </p>
+                    </div>
+                    <div className="mt-4">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                        Explanation
+                      </p>
+                      <p className="mt-2 whitespace-pre-wrap wrap-break-word text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">
+                        {expl}
+                      </p>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          </section>
         ) : null}
-        {error ? (
+      </div>
+
+      <aside
+        className="w-full shrink-0 rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900/40 lg:sticky lg:top-6 lg:max-h-[min(80vh,40rem)] lg:w-80 lg:overflow-y-auto lg:p-5"
+        aria-label="Saved review history"
+      >
+        <h2 className="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
+          History
+        </h2>
+        <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+          If storage fills up, the oldest review is removed to make room for new
+          ones.
+        </p>
+        {historyError ? (
           <p
-            className="whitespace-pre-wrap break-words rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-900 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-100"
+            className="mt-3 whitespace-pre-wrap wrap-break-word rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-900 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-100"
             role="alert"
           >
-            {error}
+            {historyError}
           </p>
         ) : null}
-      </section>
-
-      {showResults ? (
-        <section
-          ref={answersSectionRef}
-          id="mcq-results"
-          className="flex min-w-0 scroll-mt-6 flex-col gap-6"
-          aria-busy={streamingIncomplete}
-          aria-live={streamingIncomplete ? "polite" : undefined}
-        >
-          <div className="overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900/40">
-            <div className="flex flex-col gap-3 border-b border-zinc-200 bg-gradient-to-r from-emerald-50/90 to-zinc-50 px-4 py-4 dark:border-zinc-800 dark:from-emerald-950/35 dark:to-zinc-950/80 sm:flex-row sm:items-center sm:justify-between sm:px-5">
-              <div className="min-w-0">
-                <h2 className="text-base font-semibold tracking-tight text-zinc-900 sm:text-lg dark:text-zinc-50">
-                  Summary
-                </h2>
-                <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
-                  {streamingIncomplete
-                    ? "Partial results appear as the model generates them."
-                    : "Review run metadata"}
-                </p>
-              </div>
-              <p className="inline-flex w-full max-w-full items-center justify-center rounded-full border border-emerald-200/80 bg-white/90 px-3 py-2 text-center text-xs font-semibold text-emerald-800 shadow-sm sm:w-fit sm:justify-center sm:py-1 dark:border-emerald-800/60 dark:bg-zinc-900/90 dark:text-emerald-300">
-                {evaluationsForList.length}{" "}
-                {evaluationsForList.length === 1 ? "question" : "questions"}{" "}
-                {streamingIncomplete ? "so far" : "reviewed"}
-              </p>
-            </div>
-            <dl className="grid min-w-0 gap-3 p-4 sm:grid-cols-3 sm:gap-4 sm:p-5">
-              <div className="rounded-xl border border-zinc-100 bg-zinc-50/80 px-4 py-3 dark:border-zinc-800 dark:bg-zinc-950/50">
-                <dt className="text-[0.65rem] font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
-                  Model
-                </dt>
-                <dd className="mt-1.5 break-all font-mono text-sm font-medium text-zinc-900 dark:text-zinc-100">
-                  {success !== null ? success.meta.model : "Streaming…"}
-                </dd>
-                {success !== null && success.meta.modelsAttempted.length > 1 ? (
-                  <dd className="mt-2 text-xs leading-relaxed text-zinc-500 dark:text-zinc-400">
-                    Fallback chain: {success.meta.modelsAttempted.join(" → ")}{" "}
-                    (earlier models hit quota, rate limits, or overload).
-                  </dd>
-                ) : null}
-              </div>
-              <div className="rounded-xl border border-zinc-100 bg-zinc-50/80 px-4 py-3 dark:border-zinc-800 dark:bg-zinc-950/50">
-                <dt className="text-[0.65rem] font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
-                  Generated
-                </dt>
-                <dd className="mt-1.5 text-sm font-medium text-zinc-900 dark:text-zinc-100">
-                  {success !== null
-                    ? formatGeneratedTimestampIst(success.meta.generatedAt)
-                    : "—"}
-                </dd>
-              </div>
-              <div className="rounded-xl border border-zinc-100 bg-zinc-50/80 px-4 py-3 dark:border-zinc-800 dark:bg-zinc-950/50">
-                <dt className="text-[0.65rem] font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
-                  Input status
-                </dt>
-                <dd className="mt-1.5">
-                  {inputStatusLive === "complete" ||
-                  inputStatusLive === "incomplete" ? (
-                    <span
-                      className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-semibold capitalize ${inputStatusBadgeClasses(inputStatusLive)}`}
-                    >
-                      {inputStatusLabel(inputStatusLive)}
-                    </span>
-                  ) : (
-                    <span className="inline-flex rounded-full bg-zinc-200/90 px-2.5 py-0.5 text-xs font-semibold text-zinc-700 dark:bg-zinc-800 dark:text-zinc-200">
-                      Streaming…
-                    </span>
-                  )}
-                </dd>
-              </div>
-            </dl>
-            {typeof summaryResult?.inputIncompleteMessage === "string" &&
-            summaryResult.inputIncompleteMessage.length > 0 ? (
-              <div className="border-t border-zinc-200 bg-amber-50/80 px-4 py-4 sm:px-5 dark:border-zinc-800 dark:bg-amber-950/25">
-                <p className="text-xs font-semibold uppercase tracking-wide text-amber-900 dark:text-amber-200">
-                  Note
-                </p>
-                <p className="mt-1 text-sm leading-relaxed text-amber-950 dark:text-amber-100">
-                  {summaryResult.inputIncompleteMessage}
-                </p>
-              </div>
-            ) : null}
-          </div>
-
-          <div className="flex flex-col gap-8">
-            {evaluationsForList.map((ev, idx) => {
-              const qIndex = typeof ev.index === "number" ? ev.index : idx;
-              const stem =
-                typeof ev.questionText === "string"
-                  ? ev.questionText
-                  : "Receiving question text…";
-              const stemKey =
-                typeof ev.questionText === "string"
-                  ? ev.questionText.slice(0, 24)
-                  : `p-${idx}`;
-              const rawOptions = Array.isArray(ev.options) ? ev.options : [];
-              const options = rawOptions.filter(
-                (o): o is NonNullable<(typeof rawOptions)[number]> => o != null
-              );
-              const correct =
-                typeof ev.correctAnswerLabel === "string"
-                  ? ev.correctAnswerLabel
-                  : "…";
-              const expl =
-                typeof ev.explanation === "string"
-                  ? ev.explanation
-                  : "Receiving explanation…";
+        {!isMcqHistoryIdbAvailable() ? (
+          <p className="mt-4 text-sm text-zinc-500 dark:text-zinc-400">
+            History is unavailable in this environment.
+          </p>
+        ) : historyItems.length === 0 ? (
+          <p className="mt-4 text-sm text-zinc-500 dark:text-zinc-400">
+            No saved reviews yet.
+          </p>
+        ) : (
+          <ul className="mt-4 flex flex-col gap-3">
+            {historyItems.map((item) => {
               return (
-                <article
-                  key={`${qIndex}-${stemKey}`}
-                  className={`min-w-0 rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm sm:p-6 dark:border-zinc-800 dark:bg-zinc-900/40 ${streamingIncomplete ? "ring-1 ring-emerald-500/15" : ""}`}
+                <li
+                  key={item.id}
+                  className="rounded-xl border border-zinc-200 bg-zinc-50/80 p-3 dark:border-zinc-700 dark:bg-zinc-950/50"
                 >
-                  <h3 className="text-sm font-semibold text-emerald-800 sm:text-base dark:text-emerald-300">
-                    Question {qIndex + 1}
-                  </h3>
-                  <p className="mt-3 whitespace-pre-wrap break-words text-sm leading-relaxed text-zinc-800 dark:text-zinc-200">
-                    {stem}
+                  <p className="text-xs font-medium text-zinc-900 dark:text-zinc-100">
+                    <span className="line-clamp-2 wrap-break-word">
+                      {item.sourceLabel}
+                    </span>
                   </p>
-                  <div className="mt-4">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-                      Options
-                    </p>
-                    <ul className="mt-2 flex flex-col gap-2">
-                      {options.map((opt) => {
-                        const label =
-                          typeof opt.label === "string" ? opt.label : "?";
-                        const text =
-                          typeof opt.text === "string"
-                            ? opt.text
-                            : "Receiving option…";
-                        const optKey = `${qIndex}-${label}-${text.slice(0, 48)}`;
-                        return (
-                          <li
-                            key={optKey}
-                            className="min-w-0 rounded-lg bg-zinc-50 px-3 py-2 text-sm break-words dark:bg-zinc-950/60"
-                          >
-                            <span className="font-semibold text-zinc-700 dark:text-zinc-300">
-                              {label}.
-                            </span>{" "}
-                            <span className="text-zinc-800 dark:text-zinc-200">
-                              {text}
-                            </span>
-                          </li>
-                        );
-                      })}
-                    </ul>
+                  <p className="mt-1 text-[0.65rem] text-zinc-500 dark:text-zinc-400">
+                    {formatGeneratedTimestampIst(item.savedAt)}
+                  </p>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        openHistorySession(item);
+                      }}
+                      className="inline-flex items-center justify-center rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-emerald-700 dark:bg-emerald-500 dark:hover:bg-emerald-600"
+                    >
+                      Open
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setHistoryDeleteTarget(item);
+                      }}
+                      className="inline-flex items-center justify-center rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-xs font-semibold text-zinc-800 transition hover:bg-zinc-50 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                    >
+                      Delete
+                    </button>
                   </div>
-                  <div className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50/80 px-4 py-3 dark:border-emerald-900/50 dark:bg-emerald-950/30">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-emerald-900 dark:text-emerald-200">
-                      Correct answer
-                    </p>
-                    <p className="mt-1 text-sm font-semibold text-emerald-950 dark:text-emerald-100">
-                      {correct}
-                    </p>
-                  </div>
-                  <div className="mt-4">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-                      Explanation
-                    </p>
-                    <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">
-                      {expl}
-                    </p>
-                  </div>
-                </article>
+                </li>
               );
             })}
+          </ul>
+        )}
+      </aside>
+
+      {historyDeleteTarget !== null ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <button
+            type="button"
+            className="absolute inset-0 bg-black/50 dark:bg-black/60"
+            aria-label="Dismiss"
+            onClick={() => {
+              setHistoryDeleteTarget(null);
+            }}
+          />
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="history-delete-dialog-title"
+            className="relative z-10 w-full max-w-md rounded-2xl border border-zinc-200 bg-white p-5 shadow-xl dark:border-zinc-700 dark:bg-zinc-900"
+          >
+            <h3
+              id="history-delete-dialog-title"
+              className="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-50"
+            >
+              Delete this saved review?
+            </h3>
+            <p className="mt-3 text-sm leading-relaxed text-zinc-600 dark:text-zinc-400">
+              <span className="line-clamp-3 wrap-break-word font-medium text-zinc-800 dark:text-zinc-200">
+                {historyDeleteTarget.sourceLabel}
+              </span>{" "}
+              will be removed from history in this browser. You cannot undo
+              this.
+            </p>
+            <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <button
+                type="button"
+                onClick={() => {
+                  setHistoryDeleteTarget(null);
+                }}
+                className="inline-flex h-10 w-full items-center justify-center rounded-xl border border-zinc-300 bg-white px-4 text-sm font-semibold text-zinc-800 transition hover:bg-zinc-50 sm:w-auto dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const id = historyDeleteTarget.id;
+                  void removeHistorySession(id).finally(() => {
+                    setHistoryDeleteTarget(null);
+                  });
+                }}
+                className="inline-flex h-10 w-full items-center justify-center rounded-xl bg-red-600 px-4 text-sm font-semibold text-white transition hover:bg-red-700 sm:w-auto dark:bg-red-600 dark:hover:bg-red-500"
+              >
+                Delete
+              </button>
+            </div>
           </div>
-        </section>
+        </div>
       ) : null}
-    </>
+    </div>
   );
 }

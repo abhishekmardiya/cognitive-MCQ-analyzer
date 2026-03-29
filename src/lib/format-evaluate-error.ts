@@ -44,7 +44,7 @@ function appendCauseLines(err: unknown, lines: string[], depth: number): void {
         lines.push(err.responseBody.trim());
       } else {
         lines.push(
-          `${err.responseBody.slice(0, MAX_RAW_BODY_IN_MESSAGE).trim()}…`
+          `${err.responseBody.slice(0, MAX_RAW_BODY_IN_MESSAGE).trim()}…`,
         );
       }
     }
@@ -58,7 +58,7 @@ function appendCauseLines(err: unknown, lines: string[], depth: number): void {
       lines.push(`Finish reason: ${err.finishReason}`);
       if (err.finishReason === "length") {
         lines.push(
-          "The model hit its output token limit before finishing the JSON. Try fewer questions per run, or ensure the deployment uses a high maxOutputTokens."
+          "The model hit its output token limit before finishing the JSON. Try fewer questions per run, or ensure the deployment uses a high maxOutputTokens.",
         );
       }
     }

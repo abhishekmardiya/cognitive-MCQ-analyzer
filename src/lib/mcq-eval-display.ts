@@ -7,7 +7,7 @@ export function sortEvaluations(list: McqEvaluation[]) {
 }
 
 export function inputStatusBadgeClasses(
-  status: McqEvaluationResult["inputStatus"]
+  status: McqEvaluationResult["inputStatus"],
 ): string {
   switch (status) {
     case "complete":
@@ -23,7 +23,7 @@ export function inputStatusBadgeClasses(
 }
 
 export function inputStatusLabel(
-  status: McqEvaluationResult["inputStatus"]
+  status: McqEvaluationResult["inputStatus"],
 ): string {
   switch (status) {
     case "complete":

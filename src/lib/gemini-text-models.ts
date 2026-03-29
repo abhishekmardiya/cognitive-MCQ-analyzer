@@ -4,7 +4,7 @@ import { GEMINI_TEXT_MODEL_CHOICES } from "@/lib/gemini-text-model-catalog";
 const BASE_ALLOWED_IDS = new Set(
   GEMINI_TEXT_MODEL_CHOICES.map(({ id }) => {
     return id;
-  })
+  }),
 );
 
 function parseCommaList(raw: string | undefined): string[] {
@@ -131,7 +131,7 @@ export function shouldTryAlternateGeminiModel(error: unknown): boolean {
 }
 
 export function resolvePreferredGeminiModel(
-  fromClient: string | null
+  fromClient: string | null,
 ): string | null {
   if (
     fromClient !== null &&

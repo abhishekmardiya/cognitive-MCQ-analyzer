@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
+import { PDF_DOCUMENT_TITLE_SEPARATOR } from "@/lib/format-pdf-document-title";
 import { formatGeneratedTimestampIst } from "@/lib/format-timestamp-ist";
 import type { McqEvaluationResult } from "@/lib/mcq-schemas";
 
@@ -17,7 +18,7 @@ type PdfMakeInstance = {
     writeFileSync: (
       filename: string,
       content: string | Buffer,
-      options?: string
+      options?: string,
     ) => void;
   };
   setFonts: (fonts: Record<string, Record<string, string>>) => void;
@@ -47,7 +48,7 @@ function isJoinerOrFormat(cp: number): boolean {
 function fontForScalar(
   ch: string,
   cp: number,
-  lastResolved: PdfFontFamily
+  lastResolved: PdfFontFamily,
 ): { font: PdfFontFamily; resolves: boolean } {
   if (isJoinerOrFormat(cp) || MARK_CHAR_RE.test(ch)) {
     return { font: lastResolved, resolves: false };
@@ -62,7 +63,7 @@ function fontForScalar(
 }
 
 function segmentTextByScript(
-  text: string
+  text: string,
 ): { text: string; font: PdfFontFamily }[] {
   if (text.length === 0) {
     return [];
@@ -100,7 +101,7 @@ function segmentTextByScript(
 
 function scriptedParagraph(
   text: string,
-  extra: Record<string, unknown>
+  extra: Record<string, unknown>,
 ): Record<string, unknown> {
   const runs = segmentTextByScript(text);
   if (runs.length === 0) {
@@ -168,24 +169,79 @@ function getPdfMake(): PdfMakeInstance {
   return pdfMake;
 }
 
+/** Emerald / teal accents aligned with the app UI. */
+const PDF_TITLE_BRAND_COLOR = "#047857";
+const PDF_TITLE_FILE_COLOR = "#0f766e";
+const PDF_TITLE_SEP_COLOR = "#9ca3af";
+
+function buildPdfCoverTitleBlock(
+  trimmedTitle: string,
+): Record<string, unknown> {
+  const sep = PDF_DOCUMENT_TITLE_SEPARATOR;
+  const sepIdx = trimmedTitle.indexOf(sep);
+  const margin: [number, number, number, number] = [0, 0, 0, 12];
+  if (sepIdx < 0) {
+    return {
+      text: trimmedTitle,
+      font: "NotoSans",
+      fontSize: 28,
+      bold: true,
+      color: PDF_TITLE_BRAND_COLOR,
+      margin,
+    };
+  }
+  const brandPart = trimmedTitle.slice(0, sepIdx);
+  const filePart = trimmedTitle.slice(sepIdx + sep.length);
+  return {
+    font: "NotoSans",
+    text: [
+      {
+        text: brandPart,
+        bold: true,
+        fontSize: 28,
+        color: PDF_TITLE_BRAND_COLOR,
+      },
+      {
+        text: sep,
+        bold: true,
+        fontSize: 22,
+        color: PDF_TITLE_SEP_COLOR,
+      },
+      {
+        text: filePart,
+        bold: true,
+        fontSize: 26,
+        color: PDF_TITLE_FILE_COLOR,
+      },
+    ],
+    margin,
+  };
+}
+
 function buildContentBlocks({
-  title,
+  documentTitle,
   generatedAt,
   result,
 }: {
-  title: string;
+  /** When null or empty, no title line is rendered (e.g. pasted text input). */
+  documentTitle: string | null;
   generatedAt: string;
   result: McqEvaluationResult;
 }): Record<string, unknown>[] {
-  const blocks: Record<string, unknown>[] = [
-    { text: title, style: "docTitle", font: "NotoSans" },
-    {
-      text: `Generated: ${formatGeneratedTimestampIst(generatedAt)}`,
-      style: "muted",
-      font: "NotoSans",
-      margin: [0, 4, 0, 16],
-    },
-  ];
+  const blocks: Record<string, unknown>[] = [];
+  const trimmedTitle =
+    documentTitle !== null && documentTitle.trim().length > 0
+      ? documentTitle.trim()
+      : null;
+  if (trimmedTitle !== null) {
+    blocks.push(buildPdfCoverTitleBlock(trimmedTitle));
+  }
+  blocks.push({
+    text: `Generated: ${formatGeneratedTimestampIst(generatedAt)}`,
+    style: "muted",
+    font: "NotoSans",
+    margin: [0, trimmedTitle !== null ? 4 : 0, 0, 16],
+  });
 
   if (result.inputStatus === "incomplete" && result.inputIncompleteMessage) {
     blocks.push({
@@ -246,11 +302,11 @@ function buildContentBlocks({
 }
 
 export async function buildMcqPdfBuffer({
-  title,
+  documentTitle,
   generatedAt,
   result,
 }: {
-  title: string;
+  documentTitle: string | null;
   generatedAt: string;
   result: McqEvaluationResult;
 }): Promise<Uint8Array> {
@@ -258,9 +314,8 @@ export async function buildMcqPdfBuffer({
   const docDefinition = {
     pageSize: "LETTER" as const,
     pageMargins: [48, 56, 48, 56] as [number, number, number, number],
-    content: buildContentBlocks({ title, generatedAt, result }),
+    content: buildContentBlocks({ documentTitle, generatedAt, result }),
     styles: {
-      docTitle: { fontSize: 20, bold: true },
       muted: { fontSize: 10, color: "#555555" },
       warning: { fontSize: 11, color: "#b45309", bold: true },
       questionHeading: { fontSize: 14, bold: true, margin: [0, 12, 0, 0] },

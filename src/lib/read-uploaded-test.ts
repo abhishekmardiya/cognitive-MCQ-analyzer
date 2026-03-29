@@ -19,7 +19,7 @@ function uploadDisplayName(blob: Blob): string {
 }
 
 export function isNonStringFormDataFile(
-  value: FormDataEntryValue | null
+  value: FormDataEntryValue | null,
 ): value is File {
   if (value === null || typeof value === "string") {
     return false;
@@ -33,7 +33,7 @@ export function isNonStringFormDataFile(
 
 export async function rawTextFromBufferAndName(
   buffer: Buffer,
-  fileName: string
+  fileName: string,
 ): Promise<string> {
   assertSize(buffer);
   if (shouldParseAsPdf(buffer, fileName)) {

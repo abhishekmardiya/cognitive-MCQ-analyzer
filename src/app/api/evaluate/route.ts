@@ -7,6 +7,10 @@ import {
 } from "@/lib/fix-indic-extraction-spaces";
 import { formatEvaluateErrorMessage } from "@/lib/format-evaluate-error";
 import {
+  buildPdfSourceDocumentTitle,
+  PDF_APP_DOCUMENT_TITLE,
+} from "@/lib/format-pdf-document-title";
+import {
   buildGeminiModelChain,
   resolvePreferredGeminiModel,
   shouldTryAlternateGeminiModel,
@@ -26,8 +30,6 @@ export const maxDuration = 300;
 
 /** Large exams need enough room for structured JSON (many questions × explanations). */
 const MAX_MCQ_OUTPUT_TOKENS = 65_536;
-
-const REPORT_TITLE = "Cognitive MCQ Analyzer — Report";
 
 function resolveGeminiApiKey(): string | null {
   const googleEnv = process.env.GOOGLE_GENERATIVE_AI_API_KEY;
@@ -56,12 +58,14 @@ export async function POST(request: Request) {
         error:
           "Missing API key. Set GOOGLE_GENERATIVE_AI_API_KEY or GEMINI_API_KEY for the Gemini API.",
       },
-      { status: 500 }
+      { status: 500 },
     );
   }
 
   let rawText: string;
   let clientModelHint: string | null = null;
+  /** Shown as the PDF cover title (app name for pasted text; app name + file for PDF upload). */
+  let pdfDocumentTitle: string | null = null;
   const contentType = request.headers.get("content-type") || "";
   const isMultipart = contentType.toLowerCase().includes("multipart/form-data");
 
@@ -74,6 +78,7 @@ export async function POST(request: Request) {
     const fileEntry = form.get("file");
     const pasted = form.get("text");
     if (isNonStringFormDataFile(fileEntry) && fileEntry.size > 0) {
+      pdfDocumentTitle = buildPdfSourceDocumentTitle(fileEntry.name);
       try {
         rawText = await rawTextFromFormBlob(fileEntry);
       } catch (parseErr) {
@@ -82,6 +87,7 @@ export async function POST(request: Request) {
         return Response.json({ error: msg }, { status: 400 });
       }
     } else if (typeof pasted === "string") {
+      pdfDocumentTitle = PDF_APP_DOCUMENT_TITLE;
       rawText = pasted;
     } else {
       return Response.json(
@@ -89,7 +95,7 @@ export async function POST(request: Request) {
           error:
             "Multipart requests must include a non-empty file or a text field.",
         },
-        { status: 400 }
+        { status: 400 },
       );
     }
   } else {
@@ -112,19 +118,20 @@ export async function POST(request: Request) {
       } catch {
         return Response.json(
           { error: "Invalid PDF data (base64 decode failed)." },
-          { status: 400 }
+          { status: 400 },
         );
       }
       if (buffer.length === 0) {
         return Response.json(
           { error: "PDF data was empty after decoding." },
-          { status: 400 }
+          { status: 400 },
         );
       }
       const pdfName =
         typeof body.pdfFileName === "string" && body.pdfFileName.length > 0
           ? body.pdfFileName
           : "upload.pdf";
+      pdfDocumentTitle = buildPdfSourceDocumentTitle(pdfName);
       try {
         rawText = await rawTextFromBufferAndName(buffer, pdfName);
       } catch (parseErr) {
@@ -133,6 +140,7 @@ export async function POST(request: Request) {
         return Response.json({ error: msg }, { status: 400 });
       }
     } else if (typeof body.text === "string") {
+      pdfDocumentTitle = PDF_APP_DOCUMENT_TITLE;
       rawText = body.text;
     } else {
       return Response.json(
@@ -140,7 +148,7 @@ export async function POST(request: Request) {
           error:
             'JSON body must include a string "text" field, or "pdfBase64" with an optional "pdfFileName".',
         },
-        { status: 400 }
+        { status: 400 },
       );
     }
   }
@@ -152,7 +160,7 @@ export async function POST(request: Request) {
         error:
           "No text found to analyze. For PDFs, try a text-based file (not a scan); for scans, use OCR first or paste the questions.",
       },
-      { status: 400 }
+      { status: 400 },
     );
   }
 
@@ -233,7 +241,7 @@ ${trimmed}
 
         const generatedAt = new Date().toISOString();
         const pdfBytes = await buildMcqPdfBuffer({
-          title: REPORT_TITLE,
+          documentTitle: pdfDocumentTitle,
           generatedAt,
           result: resultForClient,
         });
@@ -245,7 +253,7 @@ ${trimmed}
           pdfBase64,
           pdfFileName: `cognitive-mcq-analysis-${Date.now()}.pdf`,
           meta: {
-            title: REPORT_TITLE,
+            title: pdfDocumentTitle ?? PDF_APP_DOCUMENT_TITLE,
             generatedAt,
             model: modelUsed,
             modelsAttempted,
