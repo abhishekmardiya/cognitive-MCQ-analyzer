@@ -1,18 +1,42 @@
-import { createRequire } from "node:module";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { fixIndicPdfExtractionArtifacts } from "@/lib/fix-indic-extraction-spaces";
 
-/** Absolute file URL so Node's dynamic import() resolves on serverless, not only relative to pdf.mjs. */
+/**
+ * Absolute file URL for pdf.js fake worker. Do not use require.resolve() here: the
+ * production bundler can replace it with a numeric module id, which then breaks path.*.
+ */
 function resolvePdfJsWorkerFileUrl(): string {
-  const require = createRequire(import.meta.url);
-  const pdfjsPkgJson = require.resolve("pdfjs-dist/package.json");
-  const workerPath = path.join(
-    path.dirname(pdfjsPkgJson),
-    "legacy/build/pdf.worker.mjs",
+  const candidates = [
+    path.join(
+      /* turbopackIgnore: true */ process.cwd(),
+      "node_modules",
+      "pdfjs-dist",
+      "legacy",
+      "build",
+      "pdf.worker.mjs",
+    ),
+    path.join(
+      /* turbopackIgnore: true */ process.cwd(),
+      "node_modules",
+      "pdf-parse",
+      "node_modules",
+      "pdfjs-dist",
+      "legacy",
+      "build",
+      "pdf.worker.mjs",
+    ),
+  ];
+  for (const workerPath of candidates) {
+    if (existsSync(workerPath)) {
+      return pathToFileURL(workerPath).href;
+    }
+  }
+  throw new Error(
+    "pdf.worker.mjs not found under node_modules. Ensure pdfjs-dist is installed and included in the serverless bundle.",
   );
-  return pathToFileURL(workerPath).href;
 }
 
 /**
