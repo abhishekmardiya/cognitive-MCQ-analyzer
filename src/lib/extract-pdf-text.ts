@@ -86,9 +86,15 @@ export function shouldParseAsPdf(buffer: Buffer, fileName: string): boolean {
   return isPdfMagic(buffer);
 }
 
+export type PdfTextExtraction = {
+  text: string;
+  /** 1-based page count from the parser (0 if unknown). */
+  pageCount: number;
+};
+
 export async function extractTextFromPdfBuffer(
   buffer: Buffer,
-): Promise<string> {
+): Promise<PdfTextExtraction> {
   await ensurePdfCanvasGlobals();
   const { PDFParse } = await import("pdf-parse");
   PDFParse.setWorker(resolvePdfJsWorkerFileUrl());
@@ -97,7 +103,12 @@ export async function extractTextFromPdfBuffer(
   const parser = new PDFParse({ data });
   try {
     const result = await parser.getText();
-    return fixIndicPdfExtractionArtifacts(result.text);
+    const pageCount =
+      typeof result.total === "number" && result.total > 0 ? result.total : 0;
+    return {
+      text: fixIndicPdfExtractionArtifacts(result.text),
+      pageCount,
+    };
   } finally {
     await parser.destroy();
   }

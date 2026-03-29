@@ -1,5 +1,4 @@
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
-import { Output, streamText } from "ai";
 import { buildMcqPdfBuffer } from "@/lib/build-mcq-pdf";
 import {
   fixIndicInEvaluationResult,
@@ -10,21 +9,20 @@ import {
   buildPdfSourceDocumentTitle,
   PDF_APP_DOCUMENT_TITLE,
 } from "@/lib/format-pdf-document-title";
+import { DEFAULT_GEMINI_TEXT_MODEL_ID } from "@/lib/gemini-text-model-catalog";
 import {
   buildGeminiModelChain,
   resolvePreferredGeminiModel,
   shouldTryAlternateGeminiModelWithStreamContext,
 } from "@/lib/gemini-text-models";
-import {
-  type McqEvaluationResult,
-  mcqEvaluationResultSchema,
-} from "@/lib/mcq-schemas";
+import type { McqEvaluationResult } from "@/lib/mcq-schemas";
 import { MCQ_SYSTEM_PROMPT } from "@/lib/mcq-system-prompt";
 import {
   isNonStringFormDataFile,
-  rawTextFromBufferAndName,
-  rawTextFromFormBlob,
+  rawTestMaterialFromBufferAndName,
+  rawTestMaterialFromFormBlob,
 } from "@/lib/read-uploaded-test";
+import { runMcqGeminiEvaluationForModel } from "@/lib/run-mcq-gemini-evaluation";
 
 export const maxDuration = 300;
 
@@ -63,6 +61,9 @@ export async function POST(request: Request) {
   }
 
   let rawText: string;
+  /** Set for PDF uploads so Gemini can read the file natively (fixes broken text-layer encoding). */
+  let pdfBuffer: Buffer | null = null;
+  let pdfPageCount: number | null = null;
   let clientModelHint: string | null = null;
   /** Shown as the PDF cover title (app name for pasted text; app name + file for PDF upload). */
   let pdfDocumentTitle: string | null = null;
@@ -80,7 +81,10 @@ export async function POST(request: Request) {
     if (isNonStringFormDataFile(fileEntry) && fileEntry.size > 0) {
       pdfDocumentTitle = buildPdfSourceDocumentTitle(fileEntry.name);
       try {
-        rawText = await rawTextFromFormBlob(fileEntry);
+        const material = await rawTestMaterialFromFormBlob(fileEntry);
+        rawText = material.text;
+        pdfBuffer = material.pdfBuffer;
+        pdfPageCount = material.pdfPageCount;
       } catch (parseErr) {
         const msg =
           parseErr instanceof Error ? parseErr.message : "Could not read file.";
@@ -89,6 +93,7 @@ export async function POST(request: Request) {
     } else if (typeof pasted === "string") {
       pdfDocumentTitle = PDF_APP_DOCUMENT_TITLE;
       rawText = pasted;
+      pdfBuffer = null;
     } else {
       return Response.json(
         {
@@ -133,7 +138,13 @@ export async function POST(request: Request) {
           : "upload.pdf";
       pdfDocumentTitle = buildPdfSourceDocumentTitle(pdfName);
       try {
-        rawText = await rawTextFromBufferAndName(buffer, pdfName);
+        const material = await rawTestMaterialFromBufferAndName(
+          buffer,
+          pdfName,
+        );
+        rawText = material.text;
+        pdfBuffer = material.pdfBuffer;
+        pdfPageCount = material.pdfPageCount;
       } catch (parseErr) {
         const msg =
           parseErr instanceof Error ? parseErr.message : "Could not read PDF.";
@@ -142,6 +153,7 @@ export async function POST(request: Request) {
     } else if (typeof body.text === "string") {
       pdfDocumentTitle = PDF_APP_DOCUMENT_TITLE;
       rawText = body.text;
+      pdfBuffer = null;
     } else {
       return Response.json(
         {
@@ -154,7 +166,7 @@ export async function POST(request: Request) {
   }
 
   const trimmed = fixIndicPdfExtractionArtifacts(rawText.trim());
-  if (trimmed.length === 0) {
+  if (trimmed.length === 0 && pdfBuffer === null) {
     return Response.json(
       {
         error:
@@ -169,16 +181,6 @@ export async function POST(request: Request) {
 
   const google = createGoogleGenerativeAI({ apiKey });
 
-  const promptText = `The user submitted the following test material. Parse ONLY genuine multiple-choice questions (stem + labeled options). Ignore all non-MCQ content (instructions, cover pages, keys without stems, essays, etc.). Do not invent questions from non-MCQ text.
-
-For each included MCQ, evaluate it fully and populate the structured result. Review ALL such MCQs; do not ask follow-up questions.
-
-For EVERY question, write correctAnswerLabel and explanation in the SAME language as that question (Gujarati questions → fully Gujarati; Hindi → Hindi; English → English). Never switch explanations to English for non-English questions.
-
----BEGIN TEST---
-${trimmed}
----END TEST---`;
-
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream<Uint8Array>({
@@ -190,7 +192,7 @@ ${trimmed}
       try {
         const modelsAttempted: string[] = [];
         let output: McqEvaluationResult | null = null;
-        let modelUsed = modelChain[0] ?? "gemini-2.5-flash";
+        let modelUsed = modelChain[0] ?? DEFAULT_GEMINI_TEXT_MODEL_ID;
         let lastErr: unknown;
 
         for (let i = 0; i < modelChain.length; i++) {
@@ -199,30 +201,22 @@ ${trimmed}
           let providerStreamError: unknown;
           try {
             providerStreamError = undefined;
-            const result = streamText({
-              model: google(modelId),
-              system: MCQ_SYSTEM_PROMPT,
-              prompt: promptText,
-              output: Output.object({
-                schema: mcqEvaluationResultSchema,
-                name: "McqEvaluationResult",
-                description:
-                  "Complete structured MCQ evaluation for the supplied test",
-              }),
-              maxOutputTokens: MAX_MCQ_OUTPUT_TOKENS,
-              temperature: 0.2,
-              /** Default SDK retries re-hit the same exhausted model and end as NoOutputGeneratedError without APICallError in the catch chain. */
-              maxRetries: 0,
-              onError: ({ error }) => {
-                providerStreamError = error;
-              },
-            });
-
-            for await (const partial of result.partialOutputStream) {
-              writeJsonLine({ type: "partial", data: partial });
-            }
-
-            const nextOutput = await result.output;
+            const nextOutput: McqEvaluationResult =
+              await runMcqGeminiEvaluationForModel({
+                google,
+                modelId,
+                systemPrompt: MCQ_SYSTEM_PROMPT,
+                trimmed,
+                pdfBuffer,
+                pdfPageCount,
+                maxOutputTokens: MAX_MCQ_OUTPUT_TOKENS,
+                sink: {
+                  writeJsonLine,
+                  onProviderStreamError: (e) => {
+                    providerStreamError = e;
+                  },
+                },
+              });
             output = nextOutput;
             modelUsed = modelId;
             break;

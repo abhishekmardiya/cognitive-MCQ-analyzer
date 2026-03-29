@@ -11,8 +11,16 @@ export const mcqEvaluationSchema = z.object({
     .int()
     .min(0)
     .describe("Zero-based position of the question in the supplied test"),
-  questionText: z.string().describe("Verbatim question stem"),
-  options: z.array(mcqOptionSchema).describe("All choices for this question"),
+  questionText: z
+    .string()
+    .describe(
+      "Verbatim question stem as shown in the source; when a PDF was provided, transcribe from the PDF (correct script), not from a broken text extract",
+    ),
+  options: z
+    .array(mcqOptionSchema)
+    .describe(
+      "All choices; option text must match the PDF when applicable, not mojibake",
+    ),
   correctAnswerLabel: z
     .string()
     .describe(
@@ -20,8 +28,9 @@ export const mcqEvaluationSchema = z.object({
     ),
   explanation: z
     .string()
+    .max(560)
     .describe(
-      "Full explanation: why the correct option is right and why others are wrong, or insufficient-information wording per rules",
+      "Short explanation (target under ~350 Unicode chars, hard max 560): why the correct option is right; one line only (no newline); never use ASCII double-quote (U+0022) inside this string. Must be a fully closed JSON string or the whole response fails.",
     ),
 });
 

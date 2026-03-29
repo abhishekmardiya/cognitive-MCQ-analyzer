@@ -187,31 +187,22 @@ export function isAllowedGeminiTextModelId(id: string): boolean {
 
 /**
  * Fallback when the preferred model hits quota or rate limits.
- * Gemma runs on separate free-tier quotas from Gemini Flash; `*-latest` aliases often
- * route to the same Flash stack as `gemini-2.5-flash`, so they are tried after Gemma.
+ * Order matches the catalog: newer / higher-RPD Flash-Lite first, then 2.5 Flash-Lite,
+ * then 2.5 Flash, then Gemma (separate TPM/RPD bucket; larger Gemma first for quality).
  * @see https://ai.google.dev/gemini-api/docs/models
  */
 export const DEFAULT_MODEL_FALLBACK_IDS: readonly string[] = [
-  "gemini-2.5-flash",
-  "gemini-2.5-flash-lite",
-  "gemma-3-1b-it",
-  "gemma-3-4b-it",
-  "gemma-3n-e2b-it",
-  "gemma-3n-e4b-it",
-  "gemma-3-12b-it",
-  "gemma-3-27b-it",
-  "gemini-2.5-pro",
-  "gemini-2.5-flash-lite-preview-09-2025",
   "gemini-3.1-flash-lite-preview",
   "gemini-3-flash-preview",
-  "gemini-3.1-pro-preview",
-  "gemini-2.0-flash",
-  "gemini-2.0-flash-lite",
-  "gemini-2.0-flash-001",
-  "gemini-2.0-flash-lite-001",
-  "gemini-flash-latest",
-  "gemini-flash-lite-latest",
-  "gemini-pro-latest",
+  "gemini-2.5-flash-lite",
+  "gemini-2.5-flash-lite-preview-09-2025",
+  "gemini-2.5-flash",
+  "gemma-3-27b-it",
+  "gemma-3-12b-it",
+  "gemma-3-4b-it",
+  "gemma-3-1b-it",
+  "gemma-3n-e4b-it",
+  "gemma-3n-e2b-it",
 ];
 
 function dedupeChain(ids: string[]): string[] {
