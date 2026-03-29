@@ -1,13 +1,20 @@
 "use client";
 
-import { type ChangeEvent, useCallback, useRef, useState } from "react";
+import type { DeepPartial } from "ai";
+import {
+  type ChangeEvent,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { formatGeneratedTimestampIst } from "@/lib/format-timestamp-ist";
 import {
   inputStatusBadgeClasses,
   inputStatusLabel,
   sortEvaluations,
 } from "@/lib/mcq-eval-display";
-import type { McqEvaluationResult } from "@/lib/mcq-schemas";
+import type { McqEvaluation, McqEvaluationResult } from "@/lib/mcq-schemas";
 import { MAX_UPLOAD_BYTES, MAX_UPLOAD_MB } from "@/lib/upload-limits";
 
 type EvaluateSuccess = {
@@ -25,6 +32,32 @@ type EvaluateSuccess = {
 type EvaluateErrorBody = {
   error: string;
 };
+
+type NdjsonEvent =
+  | { type: "partial"; data: DeepPartial<McqEvaluationResult> }
+  | { type: "status"; message: string }
+  | {
+      type: "complete";
+      result: McqEvaluationResult;
+      pdfBase64: string;
+      pdfFileName: string;
+      meta: EvaluateSuccess["meta"];
+    }
+  | { type: "error"; error: string };
+
+function sortPartialEvaluations(
+  list: (DeepPartial<McqEvaluation> | undefined)[] | undefined
+): DeepPartial<McqEvaluation>[] {
+  if (!Array.isArray(list)) {
+    return [];
+  }
+  const defined = list.filter(
+    (x): x is DeepPartial<McqEvaluation> => x !== undefined
+  );
+  return [...defined].sort((a, b) => {
+    return (Number(a.index) || 0) - (Number(b.index) || 0);
+  });
+}
 
 function downloadPdfFromBase64(base64: string, fileName: string) {
   const binary = atob(base64);
@@ -78,11 +111,32 @@ export function McqAnalyzerClient() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<EvaluateSuccess | null>(null);
+  const [partialResult, setPartialResult] =
+    useState<DeepPartial<McqEvaluationResult> | null>(null);
+  const [streamStatus, setStreamStatus] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const answersSectionRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    if (success === null) {
+      return;
+    }
+    const id = requestAnimationFrame(() => {
+      answersSectionRef.current?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+    });
+    return () => {
+      cancelAnimationFrame(id);
+    };
+  }, [success]);
 
   const onSubmit = useCallback(async () => {
     setError(null);
     setSuccess(null);
+    setPartialResult(null);
+    setStreamStatus(null);
     const trimmed = testText.trim();
     if (pendingPdfFile === null && trimmed.length === 0) {
       setError("Paste your test or upload a PDF before running the review.");
@@ -112,16 +166,83 @@ export function McqAnalyzerClient() {
           body: JSON.stringify({ text: trimmed }),
         });
       }
-      const data = (await response.json()) as
-        | EvaluateSuccess
-        | EvaluateErrorBody;
-      if (!response.ok) {
-        const errBody = data as EvaluateErrorBody;
-        setError(errBody.error || "Request failed.");
+
+      const contentType = response.headers.get("content-type") ?? "";
+      if (contentType.includes("application/json")) {
+        const data = (await response.json()) as
+          | EvaluateSuccess
+          | EvaluateErrorBody;
+        if (!response.ok) {
+          const errBody = data as EvaluateErrorBody;
+          setError(errBody.error || "Request failed.");
+          return;
+        }
+        const ok = data as EvaluateSuccess;
+        setSuccess(ok);
         return;
       }
-      const ok = data as EvaluateSuccess;
-      setSuccess(ok);
+
+      if (!response.ok) {
+        setError("Request failed.");
+        return;
+      }
+
+      const body = response.body;
+      if (body === null) {
+        setError("Empty response from server.");
+        return;
+      }
+
+      const reader = body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let streamError: string | null = null;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          break;
+        }
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          if (line.trim().length === 0) {
+            continue;
+          }
+          let evt: NdjsonEvent;
+          try {
+            evt = JSON.parse(line) as NdjsonEvent;
+          } catch {
+            streamError = "Could not parse server stream.";
+            break;
+          }
+          if (evt.type === "partial") {
+            setPartialResult(evt.data);
+            setStreamStatus(null);
+          } else if (evt.type === "status") {
+            setStreamStatus(evt.message);
+          } else if (evt.type === "complete") {
+            setSuccess({
+              result: evt.result,
+              pdfBase64: evt.pdfBase64,
+              pdfFileName: evt.pdfFileName,
+              meta: evt.meta,
+            });
+            setPartialResult(null);
+            setStreamStatus(null);
+          } else if (evt.type === "error") {
+            streamError = evt.error;
+          }
+        }
+        if (streamError !== null) {
+          break;
+        }
+      }
+
+      if (streamError !== null) {
+        setError(streamError);
+      }
     } catch (submitErr) {
       const msg =
         submitErr instanceof Error ? submitErr.message : "Request failed.";
@@ -158,6 +279,14 @@ export function McqAnalyzerClient() {
   }, []);
 
   const hasMcqInput = pendingPdfFile !== null || testText.trim().length > 0;
+  const showResults = success !== null || partialResult !== null;
+  const streamingIncomplete = partialResult !== null && success === null;
+  const evaluationsForList: Array<McqEvaluation | DeepPartial<McqEvaluation>> =
+    success !== null
+      ? sortEvaluations(success.result.evaluations)
+      : sortPartialEvaluations(partialResult?.evaluations);
+  const summaryResult = success?.result ?? partialResult;
+  const inputStatusLive = summaryResult?.inputStatus;
 
   return (
     <>
@@ -212,7 +341,7 @@ export function McqAnalyzerClient() {
           }}
           rows={12}
           placeholder="Paste full exam text, or upload a PDF."
-          className="field-sizing-content min-h-44 w-full min-w-0 resize-y rounded-xl border border-zinc-200 bg-zinc-50 p-3 font-mono text-sm leading-relaxed text-zinc-900 outline-none ring-emerald-600/0 transition focus:border-emerald-600 focus:ring-4 focus:ring-emerald-600/15 sm:min-h-55 sm:p-4 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-emerald-500"
+          className="field-sizing-content max-h-[min(28rem,60vh)] min-h-44 w-full min-w-0 resize-y overflow-x-auto overflow-y-auto rounded-xl border border-zinc-200 bg-zinc-50 p-3 font-mono text-sm leading-relaxed text-zinc-900 outline-none ring-emerald-600/0 transition focus:border-emerald-600 focus:ring-4 focus:ring-emerald-600/15 sm:min-h-55 sm:p-4 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-emerald-500"
         />
         <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
           <button
@@ -226,7 +355,11 @@ export function McqAnalyzerClient() {
             }
             className="inline-flex h-11 min-h-11 w-full items-center justify-center rounded-xl bg-emerald-600 px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700 active:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-60 sm:h-auto sm:w-auto sm:min-h-10 sm:py-2.5 dark:bg-emerald-500 dark:hover:bg-emerald-600 dark:active:bg-emerald-700"
           >
-            {loading ? "Reviewing…" : "Submit"}
+            {loading
+              ? partialResult !== null
+                ? "Streaming results…"
+                : "Reviewing…"
+              : "Submit"}
           </button>
           {success ? (
             <button
@@ -240,6 +373,11 @@ export function McqAnalyzerClient() {
             </button>
           ) : null}
         </div>
+        {streamStatus ? (
+          <output className="block text-sm text-zinc-600 dark:text-zinc-400">
+            {streamStatus}
+          </output>
+        ) : null}
         {error ? (
           <p
             className="whitespace-pre-wrap break-words rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-900 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-100"
@@ -250,8 +388,14 @@ export function McqAnalyzerClient() {
         ) : null}
       </section>
 
-      {success ? (
-        <section className="flex min-w-0 flex-col gap-6">
+      {showResults ? (
+        <section
+          ref={answersSectionRef}
+          id="mcq-results"
+          className="flex min-w-0 scroll-mt-6 flex-col gap-6"
+          aria-busy={streamingIncomplete}
+          aria-live={streamingIncomplete ? "polite" : undefined}
+        >
           <div className="overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900/40">
             <div className="flex flex-col gap-3 border-b border-zinc-200 bg-gradient-to-r from-emerald-50/90 to-zinc-50 px-4 py-4 dark:border-zinc-800 dark:from-emerald-950/35 dark:to-zinc-950/80 sm:flex-row sm:items-center sm:justify-between sm:px-5">
               <div className="min-w-0">
@@ -259,15 +403,15 @@ export function McqAnalyzerClient() {
                   Summary
                 </h2>
                 <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
-                  Review run metadata
+                  {streamingIncomplete
+                    ? "Partial results appear as the model generates them."
+                    : "Review run metadata"}
                 </p>
               </div>
               <p className="inline-flex w-full max-w-full items-center justify-center rounded-full border border-emerald-200/80 bg-white/90 px-3 py-2 text-center text-xs font-semibold text-emerald-800 shadow-sm sm:w-fit sm:justify-center sm:py-1 dark:border-emerald-800/60 dark:bg-zinc-900/90 dark:text-emerald-300">
-                {success.result.evaluations.length}{" "}
-                {success.result.evaluations.length === 1
-                  ? "question"
-                  : "questions"}{" "}
-                reviewed
+                {evaluationsForList.length}{" "}
+                {evaluationsForList.length === 1 ? "question" : "questions"}{" "}
+                {streamingIncomplete ? "so far" : "reviewed"}
               </p>
             </div>
             <dl className="grid min-w-0 gap-3 p-4 sm:grid-cols-3 sm:gap-4 sm:p-5">
@@ -276,9 +420,9 @@ export function McqAnalyzerClient() {
                   Model
                 </dt>
                 <dd className="mt-1.5 break-all font-mono text-sm font-medium text-zinc-900 dark:text-zinc-100">
-                  {success.meta.model}
+                  {success !== null ? success.meta.model : "Streaming…"}
                 </dd>
-                {success.meta.modelsAttempted.length > 1 ? (
+                {success !== null && success.meta.modelsAttempted.length > 1 ? (
                   <dd className="mt-2 text-xs leading-relaxed text-zinc-500 dark:text-zinc-400">
                     Fallback chain: {success.meta.modelsAttempted.join(" → ")}{" "}
                     (earlier models hit quota, rate limits, or overload).
@@ -290,7 +434,9 @@ export function McqAnalyzerClient() {
                   Generated
                 </dt>
                 <dd className="mt-1.5 text-sm font-medium text-zinc-900 dark:text-zinc-100">
-                  {formatGeneratedTimestampIst(success.meta.generatedAt)}
+                  {success !== null
+                    ? formatGeneratedTimestampIst(success.meta.generatedAt)
+                    : "—"}
                 </dd>
               </div>
               <div className="rounded-xl border border-zinc-100 bg-zinc-50/80 px-4 py-3 dark:border-zinc-800 dark:bg-zinc-950/50">
@@ -298,55 +444,91 @@ export function McqAnalyzerClient() {
                   Input status
                 </dt>
                 <dd className="mt-1.5">
-                  <span
-                    className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-semibold capitalize ${inputStatusBadgeClasses(success.result.inputStatus)}`}
-                  >
-                    {inputStatusLabel(success.result.inputStatus)}
-                  </span>
+                  {inputStatusLive === "complete" ||
+                  inputStatusLive === "incomplete" ? (
+                    <span
+                      className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-semibold capitalize ${inputStatusBadgeClasses(inputStatusLive)}`}
+                    >
+                      {inputStatusLabel(inputStatusLive)}
+                    </span>
+                  ) : (
+                    <span className="inline-flex rounded-full bg-zinc-200/90 px-2.5 py-0.5 text-xs font-semibold text-zinc-700 dark:bg-zinc-800 dark:text-zinc-200">
+                      Streaming…
+                    </span>
+                  )}
                 </dd>
               </div>
             </dl>
-            {success.result.inputIncompleteMessage ? (
+            {typeof summaryResult?.inputIncompleteMessage === "string" &&
+            summaryResult.inputIncompleteMessage.length > 0 ? (
               <div className="border-t border-zinc-200 bg-amber-50/80 px-4 py-4 sm:px-5 dark:border-zinc-800 dark:bg-amber-950/25">
                 <p className="text-xs font-semibold uppercase tracking-wide text-amber-900 dark:text-amber-200">
                   Note
                 </p>
                 <p className="mt-1 text-sm leading-relaxed text-amber-950 dark:text-amber-100">
-                  {success.result.inputIncompleteMessage}
+                  {summaryResult.inputIncompleteMessage}
                 </p>
               </div>
             ) : null}
           </div>
 
           <div className="flex flex-col gap-8">
-            {sortEvaluations(success.result.evaluations).map((ev) => {
+            {evaluationsForList.map((ev, idx) => {
+              const qIndex = typeof ev.index === "number" ? ev.index : idx;
+              const stem =
+                typeof ev.questionText === "string"
+                  ? ev.questionText
+                  : "Receiving question text…";
+              const stemKey =
+                typeof ev.questionText === "string"
+                  ? ev.questionText.slice(0, 24)
+                  : `p-${idx}`;
+              const rawOptions = Array.isArray(ev.options) ? ev.options : [];
+              const options = rawOptions.filter(
+                (o): o is NonNullable<(typeof rawOptions)[number]> => o != null
+              );
+              const correct =
+                typeof ev.correctAnswerLabel === "string"
+                  ? ev.correctAnswerLabel
+                  : "…";
+              const expl =
+                typeof ev.explanation === "string"
+                  ? ev.explanation
+                  : "Receiving explanation…";
               return (
                 <article
-                  key={`${ev.index}-${ev.questionText.slice(0, 24)}`}
-                  className="min-w-0 rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm sm:p-6 dark:border-zinc-800 dark:bg-zinc-900/40"
+                  key={`${qIndex}-${stemKey}`}
+                  className={`min-w-0 rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm sm:p-6 dark:border-zinc-800 dark:bg-zinc-900/40 ${streamingIncomplete ? "ring-1 ring-emerald-500/15" : ""}`}
                 >
                   <h3 className="text-sm font-semibold text-emerald-800 sm:text-base dark:text-emerald-300">
-                    Question {ev.index + 1}
+                    Question {qIndex + 1}
                   </h3>
                   <p className="mt-3 whitespace-pre-wrap break-words text-sm leading-relaxed text-zinc-800 dark:text-zinc-200">
-                    {ev.questionText}
+                    {stem}
                   </p>
                   <div className="mt-4">
                     <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
                       Options
                     </p>
                     <ul className="mt-2 flex flex-col gap-2">
-                      {ev.options.map((opt) => {
+                      {options.map((opt) => {
+                        const label =
+                          typeof opt.label === "string" ? opt.label : "?";
+                        const text =
+                          typeof opt.text === "string"
+                            ? opt.text
+                            : "Receiving option…";
+                        const optKey = `${qIndex}-${label}-${text.slice(0, 48)}`;
                         return (
                           <li
-                            key={`${ev.index}-${opt.label}`}
+                            key={optKey}
                             className="min-w-0 rounded-lg bg-zinc-50 px-3 py-2 text-sm break-words dark:bg-zinc-950/60"
                           >
                             <span className="font-semibold text-zinc-700 dark:text-zinc-300">
-                              {opt.label}.
+                              {label}.
                             </span>{" "}
                             <span className="text-zinc-800 dark:text-zinc-200">
-                              {opt.text}
+                              {text}
                             </span>
                           </li>
                         );
@@ -358,7 +540,7 @@ export function McqAnalyzerClient() {
                       Correct answer
                     </p>
                     <p className="mt-1 text-sm font-semibold text-emerald-950 dark:text-emerald-100">
-                      {ev.correctAnswerLabel}
+                      {correct}
                     </p>
                   </div>
                   <div className="mt-4">
@@ -366,7 +548,7 @@ export function McqAnalyzerClient() {
                       Explanation
                     </p>
                     <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">
-                      {ev.explanation}
+                      {expl}
                     </p>
                   </div>
                 </article>

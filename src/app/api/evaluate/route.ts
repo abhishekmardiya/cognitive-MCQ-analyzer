@@ -1,14 +1,11 @@
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
-import { generateText, Output } from "ai";
+import { Output, streamText } from "ai";
 import { buildMcqPdfBuffer } from "@/lib/build-mcq-pdf";
 import {
   fixIndicInEvaluationResult,
   fixIndicPdfExtractionArtifacts,
 } from "@/lib/fix-indic-extraction-spaces";
-import {
-  evaluateErrorHttpStatus,
-  formatEvaluateErrorMessage,
-} from "@/lib/format-evaluate-error";
+import { formatEvaluateErrorMessage } from "@/lib/format-evaluate-error";
 import {
   buildGeminiModelChain,
   resolvePreferredGeminiModel,
@@ -174,70 +171,99 @@ For EVERY question, write correctAnswerLabel and explanation in the SAME languag
 ${trimmed}
 ---END TEST---`;
 
-  try {
-    const modelsAttempted: string[] = [];
-    let output: McqEvaluationResult | null = null;
-    let modelUsed = modelChain[0] ?? "gemini-2.5-flash";
-    let lastErr: unknown;
+  const encoder = new TextEncoder();
 
-    for (let i = 0; i < modelChain.length; i++) {
-      const modelId = modelChain[i];
-      modelsAttempted.push(modelId);
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const writeJsonLine = (payload: unknown) => {
+        controller.enqueue(encoder.encode(`${JSON.stringify(payload)}\n`));
+      };
+
       try {
-        const { output: nextOutput } = await generateText({
-          model: google(modelId),
-          system: MCQ_SYSTEM_PROMPT,
-          prompt: promptText,
-          output: Output.object({
-            schema: mcqEvaluationResultSchema,
-            name: "McqEvaluationResult",
-            description:
-              "Complete structured MCQ evaluation for the supplied test",
-          }),
-          maxOutputTokens: MAX_MCQ_OUTPUT_TOKENS,
-          temperature: 0.2,
-        });
-        output = nextOutput;
-        modelUsed = modelId;
-        break;
-      } catch (err) {
-        lastErr = err;
-        const hasMore = i < modelChain.length - 1;
-        if (shouldTryAlternateGeminiModel(err) && hasMore) {
-          continue;
+        const modelsAttempted: string[] = [];
+        let output: McqEvaluationResult | null = null;
+        let modelUsed = modelChain[0] ?? "gemini-2.5-flash";
+        let lastErr: unknown;
+
+        for (let i = 0; i < modelChain.length; i++) {
+          const modelId = modelChain[i];
+          modelsAttempted.push(modelId);
+          try {
+            const result = streamText({
+              model: google(modelId),
+              system: MCQ_SYSTEM_PROMPT,
+              prompt: promptText,
+              output: Output.object({
+                schema: mcqEvaluationResultSchema,
+                name: "McqEvaluationResult",
+                description:
+                  "Complete structured MCQ evaluation for the supplied test",
+              }),
+              maxOutputTokens: MAX_MCQ_OUTPUT_TOKENS,
+              temperature: 0.2,
+            });
+
+            for await (const partial of result.partialOutputStream) {
+              writeJsonLine({ type: "partial", data: partial });
+            }
+
+            const nextOutput = await result.output;
+            output = nextOutput;
+            modelUsed = modelId;
+            break;
+          } catch (err) {
+            lastErr = err;
+            const hasMore = i < modelChain.length - 1;
+            if (shouldTryAlternateGeminiModel(err) && hasMore) {
+              writeJsonLine({
+                type: "status",
+                message: "Switching to a fallback model…",
+              });
+              continue;
+            }
+            throw err;
+          }
         }
-        throw err;
+
+        if (output === null) {
+          throw lastErr ?? new Error("Evaluation failed.");
+        }
+
+        const resultForClient = fixIndicInEvaluationResult(output);
+
+        const generatedAt = new Date().toISOString();
+        const pdfBytes = await buildMcqPdfBuffer({
+          title: REPORT_TITLE,
+          generatedAt,
+          result: resultForClient,
+        });
+        const pdfBase64 = Buffer.from(pdfBytes).toString("base64");
+
+        writeJsonLine({
+          type: "complete",
+          result: resultForClient,
+          pdfBase64,
+          pdfFileName: `cognitive-mcq-analysis-${Date.now()}.pdf`,
+          meta: {
+            title: REPORT_TITLE,
+            generatedAt,
+            model: modelUsed,
+            modelsAttempted,
+          },
+        });
+      } catch (err) {
+        const message = formatEvaluateErrorMessage(err);
+        writeJsonLine({ type: "error", error: message });
+      } finally {
+        controller.close();
       }
-    }
+    },
+  });
 
-    if (output === null) {
-      throw lastErr ?? new Error("Evaluation failed.");
-    }
-
-    const resultForClient = fixIndicInEvaluationResult(output);
-
-    const generatedAt = new Date().toISOString();
-    const pdfBytes = await buildMcqPdfBuffer({
-      title: REPORT_TITLE,
-      generatedAt,
-      result: resultForClient,
-    });
-    const pdfBase64 = Buffer.from(pdfBytes).toString("base64");
-
-    return Response.json({
-      result: resultForClient,
-      pdfBase64,
-      pdfFileName: `cognitive-mcq-analysis-${Date.now()}.pdf`,
-      meta: {
-        title: REPORT_TITLE,
-        generatedAt,
-        model: modelUsed,
-        modelsAttempted,
-      },
-    });
-  } catch (err) {
-    const message = formatEvaluateErrorMessage(err);
-    const status = evaluateErrorHttpStatus(err);
-    return Response.json({ error: message }, { status });
-  }
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "application/x-ndjson; charset=utf-8",
+      "Cache-Control": "no-store",
+    },
+  });
 }
