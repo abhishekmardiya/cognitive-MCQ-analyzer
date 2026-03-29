@@ -25,7 +25,6 @@ export const GEMINI_TEXT_MODEL_CHOICES: readonly {
     label: "Gemini 3.1 Flash-Lite Preview",
   },
   { id: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro Preview" },
-  { id: "gemini-3-pro-preview", label: "Gemini 3 Pro Preview" },
   { id: "gemma-3-1b-it", label: "Gemma 3 1B IT" },
   { id: "gemma-3-4b-it", label: "Gemma 3 4B IT" },
   { id: "gemma-3n-e2b-it", label: "Gemma 3n E2B IT" },

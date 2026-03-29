@@ -1,4 +1,5 @@
 import { APICallError } from "@ai-sdk/provider";
+import { NoOutputGeneratedError, RetryError } from "ai";
 import { GEMINI_TEXT_MODEL_CHOICES } from "@/lib/gemini-text-model-catalog";
 
 const BASE_ALLOWED_IDS = new Set(
@@ -6,6 +7,151 @@ const BASE_ALLOWED_IDS = new Set(
     return id;
   }),
 );
+
+const MAX_ERROR_SIGNAL_DEPTH = 16;
+
+function pushErrorSignal(out: string[], value: unknown): void {
+  if (value === null || value === undefined) {
+    return;
+  }
+  if (typeof value === "string") {
+    if (value.length > 0) {
+      out.push(value);
+    }
+    return;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    out.push(String(value));
+    return;
+  }
+  if (value instanceof Error) {
+    if (value.message.length > 0) {
+      out.push(value.message);
+    }
+    return;
+  }
+  if (typeof value === "object") {
+    try {
+      const s = JSON.stringify(value);
+      if (s.length > 0 && s !== "{}") {
+        out.push(s);
+      }
+    } catch {
+      return;
+    }
+  }
+}
+
+function collectGeminiErrorSignals(
+  error: unknown,
+  depth: number,
+  out: string[],
+): void {
+  if (depth > MAX_ERROR_SIGNAL_DEPTH || error === null || error === undefined) {
+    return;
+  }
+
+  if (APICallError.isInstance(error)) {
+    pushErrorSignal(out, error.message);
+    pushErrorSignal(out, error.responseBody);
+    pushErrorSignal(out, error.data);
+    if (error.statusCode !== undefined) {
+      pushErrorSignal(out, `HTTP_STATUS_${String(error.statusCode)}`);
+    }
+    collectGeminiErrorSignals(error.cause, depth + 1, out);
+    return;
+  }
+
+  if (RetryError.isInstance(error)) {
+    pushErrorSignal(out, error.message);
+    for (const e of error.errors) {
+      collectGeminiErrorSignals(e, depth + 1, out);
+    }
+    return;
+  }
+
+  if (error instanceof Error) {
+    pushErrorSignal(out, error.message);
+    collectGeminiErrorSignals(error.cause, depth + 1, out);
+    return;
+  }
+
+  if (typeof error === "object") {
+    const o = error as Record<string, unknown>;
+    pushErrorSignal(out, o.message);
+    pushErrorSignal(out, o.responseBody);
+    pushErrorSignal(out, o.errorText);
+    pushErrorSignal(out, o.value);
+    if ("cause" in o) {
+      collectGeminiErrorSignals(o.cause, depth + 1, out);
+    }
+  }
+}
+
+/** True when concatenated API / SDK text looks like Gemini quota or rate limiting. */
+function textSuggestsGeminiQuotaOrRateLimit(lower: string): boolean {
+  if (lower.length === 0) {
+    return false;
+  }
+  const phrases = [
+    "resource_exhausted",
+    "resource exhausted",
+    "quota exceeded",
+    "exceeded your current quota",
+    "exceeded your quota",
+    "quota exceeded for metric",
+    "generate_content_free_tier",
+    "rate_limit",
+    "rate limit",
+    "too_many_requests",
+    "too many requests",
+    "please retry in ",
+  ];
+  for (const p of phrases) {
+    if (lower.includes(p)) {
+      return true;
+    }
+  }
+  if (lower.includes("quota")) {
+    return true;
+  }
+  return false;
+}
+
+function hasRetryableHttpStatusInChain(error: unknown): boolean {
+  const stack: unknown[] = [error];
+  let seen = 0;
+  while (stack.length > 0 && seen <= 48) {
+    seen++;
+    const current = stack.pop();
+    if (current === null || current === undefined) {
+      continue;
+    }
+    if (APICallError.isInstance(current)) {
+      const c = current.statusCode;
+      if (c === 402 || c === 429 || c === 503) {
+        return true;
+      }
+    }
+    if (RetryError.isInstance(current)) {
+      for (const e of current.errors) {
+        stack.push(e);
+      }
+      continue;
+    }
+    if (current instanceof Error && current.cause !== undefined) {
+      stack.push(current.cause);
+      continue;
+    }
+    if (current !== null && typeof current === "object" && "cause" in current) {
+      const next = (current as { cause?: unknown }).cause;
+      if (next !== undefined) {
+        stack.push(next);
+      }
+    }
+  }
+  return false;
+}
 
 function parseCommaList(raw: string | undefined): string[] {
   if (typeof raw !== "string" || raw.trim().length === 0) {
@@ -39,28 +185,33 @@ export function isAllowedGeminiTextModelId(id: string): boolean {
   return extraAllowedIdsFromEnv().has(id);
 }
 
-/** Default order when one model hits quota (Flash first, then Pro, previews, Gemma). */
+/**
+ * Fallback when the preferred model hits quota or rate limits.
+ * Gemma runs on separate free-tier quotas from Gemini Flash; `*-latest` aliases often
+ * route to the same Flash stack as `gemini-2.5-flash`, so they are tried after Gemma.
+ * @see https://ai.google.dev/gemini-api/docs/models
+ */
 export const DEFAULT_MODEL_FALLBACK_IDS: readonly string[] = [
   "gemini-2.5-flash",
   "gemini-2.5-flash-lite",
-  "gemini-flash-lite-latest",
-  "gemini-flash-latest",
-  "gemini-2.0-flash",
-  "gemini-2.0-flash-lite",
+  "gemma-3-1b-it",
+  "gemma-3-4b-it",
+  "gemma-3n-e2b-it",
+  "gemma-3n-e4b-it",
+  "gemma-3-12b-it",
+  "gemma-3-27b-it",
   "gemini-2.5-pro",
-  "gemini-pro-latest",
+  "gemini-2.5-flash-lite-preview-09-2025",
   "gemini-3.1-flash-lite-preview",
   "gemini-3-flash-preview",
   "gemini-3.1-pro-preview",
-  "gemini-2.5-flash-lite-preview-09-2025",
+  "gemini-2.0-flash",
+  "gemini-2.0-flash-lite",
   "gemini-2.0-flash-001",
   "gemini-2.0-flash-lite-001",
-  "gemma-3-27b-it",
-  "gemma-3-12b-it",
-  "gemma-3-4b-it",
-  "gemma-3n-e4b-it",
-  "gemma-3n-e2b-it",
-  "gemma-3-1b-it",
+  "gemini-flash-latest",
+  "gemini-flash-lite-latest",
+  "gemini-pro-latest",
 ];
 
 function dedupeChain(ids: string[]): string[] {
@@ -91,43 +242,42 @@ export function buildGeminiModelChain(preferredModel: string | null): string[] {
   return base;
 }
 
+/**
+ * Whether to try the next model in the chain. Collects messages, response bodies,
+ * JSON `data`, and nested causes so Gemini quota errors embedded in SDK wrappers still match.
+ */
 export function shouldTryAlternateGeminiModel(error: unknown): boolean {
-  let current: unknown = error;
-  for (let d = 0; d < 12 && current !== null && current !== undefined; d++) {
-    if (APICallError.isInstance(current)) {
-      const { statusCode } = current;
-      if (statusCode === 429 || statusCode === 503) {
-        return true;
-      }
-      const body = (current.responseBody ?? "").toLowerCase();
-      if (
-        body.includes("resource_exhausted") ||
-        body.includes("quota") ||
-        body.includes("rate_limit") ||
-        body.includes("rate limit") ||
-        body.includes("too_many_requests")
-      ) {
-        return true;
-      }
-    }
-    if (current instanceof Error) {
-      const m = current.message.toLowerCase();
-      if (
-        m.includes("resource_exhausted") ||
-        m.includes("quota") ||
-        m.includes("rate limit") ||
-        m.includes("429")
-      ) {
-        return true;
-      }
-    }
-    if (current !== null && typeof current === "object" && "cause" in current) {
-      current = (current as { cause?: unknown }).cause;
-    } else {
-      break;
+  if (NoOutputGeneratedError.isInstance(error)) {
+    const hint = error.message.toLowerCase();
+    if (hint.includes("check the stream for errors")) {
+      return true;
     }
   }
+
+  const signals: string[] = [];
+  collectGeminiErrorSignals(error, 0, signals);
+  const blob = signals.join("\n").toLowerCase();
+  if (textSuggestsGeminiQuotaOrRateLimit(blob)) {
+    return true;
+  }
+  if (blob.includes("429")) {
+    return true;
+  }
+  if (hasRetryableHttpStatusInChain(error)) {
+    return true;
+  }
   return false;
+}
+
+/** Use in /api/evaluate: stream errors are reported to `onError` while `catch` may only see NoOutputGeneratedError. */
+export function shouldTryAlternateGeminiModelWithStreamContext(
+  caught: unknown,
+  providerStreamError: unknown,
+): boolean {
+  return (
+    shouldTryAlternateGeminiModel(caught) ||
+    shouldTryAlternateGeminiModel(providerStreamError)
+  );
 }
 
 export function resolvePreferredGeminiModel(

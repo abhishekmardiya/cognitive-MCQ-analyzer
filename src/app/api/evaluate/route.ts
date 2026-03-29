@@ -13,7 +13,7 @@ import {
 import {
   buildGeminiModelChain,
   resolvePreferredGeminiModel,
-  shouldTryAlternateGeminiModel,
+  shouldTryAlternateGeminiModelWithStreamContext,
 } from "@/lib/gemini-text-models";
 import {
   type McqEvaluationResult,
@@ -196,7 +196,9 @@ ${trimmed}
         for (let i = 0; i < modelChain.length; i++) {
           const modelId = modelChain[i];
           modelsAttempted.push(modelId);
+          let providerStreamError: unknown;
           try {
+            providerStreamError = undefined;
             const result = streamText({
               model: google(modelId),
               system: MCQ_SYSTEM_PROMPT,
@@ -209,6 +211,11 @@ ${trimmed}
               }),
               maxOutputTokens: MAX_MCQ_OUTPUT_TOKENS,
               temperature: 0.2,
+              /** Default SDK retries re-hit the same exhausted model and end as NoOutputGeneratedError without APICallError in the catch chain. */
+              maxRetries: 0,
+              onError: ({ error }) => {
+                providerStreamError = error;
+              },
             });
 
             for await (const partial of result.partialOutputStream) {
@@ -222,10 +229,16 @@ ${trimmed}
           } catch (err) {
             lastErr = err;
             const hasMore = i < modelChain.length - 1;
-            if (shouldTryAlternateGeminiModel(err) && hasMore) {
+            if (
+              shouldTryAlternateGeminiModelWithStreamContext(
+                err,
+                providerStreamError,
+              ) &&
+              hasMore
+            ) {
               writeJsonLine({
                 type: "status",
-                message: "Switching to a fallback model…",
+                message: `Switching model after ${modelId} failed (trying next in chain)…`,
               });
               continue;
             }
