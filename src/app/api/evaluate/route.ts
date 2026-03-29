@@ -1,7 +1,23 @@
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { generateText, Output } from "ai";
 import { buildMcqPdfBuffer } from "@/lib/build-mcq-pdf";
-import { mcqEvaluationResultSchema } from "@/lib/mcq-schemas";
+import {
+  fixIndicInEvaluationResult,
+  fixIndicPdfExtractionArtifacts,
+} from "@/lib/fix-indic-extraction-spaces";
+import {
+  evaluateErrorHttpStatus,
+  formatEvaluateErrorMessage,
+} from "@/lib/format-evaluate-error";
+import {
+  buildGeminiModelChain,
+  resolvePreferredGeminiModel,
+  shouldTryAlternateGeminiModel,
+} from "@/lib/gemini-text-models";
+import {
+  type McqEvaluationResult,
+  mcqEvaluationResultSchema,
+} from "@/lib/mcq-schemas";
 import { MCQ_SYSTEM_PROMPT } from "@/lib/mcq-system-prompt";
 import {
   isNonStringFormDataFile,
@@ -9,10 +25,10 @@ import {
   rawTextFromFormBlob,
 } from "@/lib/read-uploaded-test";
 
-export const runtime = "nodejs";
 export const maxDuration = 300;
 
-const MAX_INPUT_CHARS = 120_000;
+/** Large exams need enough room for structured JSON (many questions × explanations). */
+const MAX_MCQ_OUTPUT_TOKENS = 65_536;
 
 const REPORT_TITLE = "Cognitive MCQ Analyzer — Report";
 
@@ -28,18 +44,11 @@ function resolveGeminiApiKey(): string | null {
   return null;
 }
 
-function getModelId(): string {
-  const id = process.env.GEMINI_MODEL;
-  if (typeof id === "string" && id.length > 0) {
-    return id;
-  }
-  return "gemini-2.5-flash";
-}
-
 type JsonEvaluateBody = {
   text?: unknown;
   pdfBase64?: unknown;
   pdfFileName?: unknown;
+  model?: unknown;
 };
 
 export async function POST(request: Request) {
@@ -55,11 +64,16 @@ export async function POST(request: Request) {
   }
 
   let rawText: string;
+  let clientModelHint: string | null = null;
   const contentType = request.headers.get("content-type") || "";
   const isMultipart = contentType.toLowerCase().includes("multipart/form-data");
 
   if (isMultipart) {
     const form = await request.formData();
+    const modelField = form.get("model");
+    if (typeof modelField === "string" && modelField.length > 0) {
+      clientModelHint = modelField;
+    }
     const fileEntry = form.get("file");
     const pasted = form.get("text");
     if (isNonStringFormDataFile(fileEntry) && fileEntry.size > 0) {
@@ -87,6 +101,10 @@ export async function POST(request: Request) {
       body = (await request.json()) as JsonEvaluateBody;
     } catch {
       return Response.json({ error: "Invalid JSON body." }, { status: 400 });
+    }
+
+    if (typeof body.model === "string" && body.model.length > 0) {
+      clientModelHint = body.model;
     }
 
     const pdfB64 = body.pdfBase64;
@@ -130,7 +148,7 @@ export async function POST(request: Request) {
     }
   }
 
-  const trimmed = rawText.trim();
+  const trimmed = fixIndicPdfExtractionArtifacts(rawText.trim());
   if (trimmed.length === 0) {
     return Response.json(
       {
@@ -140,55 +158,86 @@ export async function POST(request: Request) {
       { status: 400 }
     );
   }
-  if (trimmed.length > MAX_INPUT_CHARS) {
-    return Response.json(
-      { error: `Input exceeds the maximum of ${MAX_INPUT_CHARS} characters.` },
-      { status: 400 }
-    );
-  }
+
+  const preferred = resolvePreferredGeminiModel(clientModelHint);
+  const modelChain = buildGeminiModelChain(preferred);
 
   const google = createGoogleGenerativeAI({ apiKey });
 
-  try {
-    const { output } = await generateText({
-      model: google(getModelId()),
-      system: MCQ_SYSTEM_PROMPT,
-      prompt: `The user submitted the following MCQ test material. Parse every distinct multiple-choice question, evaluate each one fully, and populate the structured result. Review ALL questions; do not ask follow-up questions.
+  const promptText = `The user submitted the following test material. Parse ONLY genuine multiple-choice questions (stem + labeled options). Ignore all non-MCQ content (instructions, cover pages, keys without stems, essays, etc.). Do not invent questions from non-MCQ text.
+
+For each included MCQ, evaluate it fully and populate the structured result. Review ALL such MCQs; do not ask follow-up questions.
 
 For EVERY question, write correctAnswerLabel and explanation in the SAME language as that question (Gujarati questions → fully Gujarati; Hindi → Hindi; English → English). Never switch explanations to English for non-English questions.
 
 ---BEGIN TEST---
 ${trimmed}
----END TEST---`,
-      output: Output.object({
-        schema: mcqEvaluationResultSchema,
-        name: "McqEvaluationResult",
-        description: "Complete structured MCQ evaluation for the supplied test",
-      }),
-      maxOutputTokens: 16_384,
-      temperature: 0.2,
-    });
+---END TEST---`;
+
+  try {
+    const modelsAttempted: string[] = [];
+    let output: McqEvaluationResult | null = null;
+    let modelUsed = modelChain[0] ?? "gemini-2.5-flash";
+    let lastErr: unknown;
+
+    for (let i = 0; i < modelChain.length; i++) {
+      const modelId = modelChain[i];
+      modelsAttempted.push(modelId);
+      try {
+        const { output: nextOutput } = await generateText({
+          model: google(modelId),
+          system: MCQ_SYSTEM_PROMPT,
+          prompt: promptText,
+          output: Output.object({
+            schema: mcqEvaluationResultSchema,
+            name: "McqEvaluationResult",
+            description:
+              "Complete structured MCQ evaluation for the supplied test",
+          }),
+          maxOutputTokens: MAX_MCQ_OUTPUT_TOKENS,
+          temperature: 0.2,
+        });
+        output = nextOutput;
+        modelUsed = modelId;
+        break;
+      } catch (err) {
+        lastErr = err;
+        const hasMore = i < modelChain.length - 1;
+        if (shouldTryAlternateGeminiModel(err) && hasMore) {
+          continue;
+        }
+        throw err;
+      }
+    }
+
+    if (output === null) {
+      throw lastErr ?? new Error("Evaluation failed.");
+    }
+
+    const resultForClient = fixIndicInEvaluationResult(output);
 
     const generatedAt = new Date().toISOString();
     const pdfBytes = await buildMcqPdfBuffer({
       title: REPORT_TITLE,
       generatedAt,
-      result: output,
+      result: resultForClient,
     });
     const pdfBase64 = Buffer.from(pdfBytes).toString("base64");
 
     return Response.json({
-      result: output,
+      result: resultForClient,
       pdfBase64,
       pdfFileName: `cognitive-mcq-analysis-${Date.now()}.pdf`,
       meta: {
         title: REPORT_TITLE,
         generatedAt,
-        model: getModelId(),
+        model: modelUsed,
+        modelsAttempted,
       },
     });
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Evaluation failed.";
-    return Response.json({ error: message }, { status: 502 });
+    const message = formatEvaluateErrorMessage(err);
+    const status = evaluateErrorHttpStatus(err);
+    return Response.json({ error: message }, { status });
   }
 }

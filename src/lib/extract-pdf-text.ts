@@ -1,3 +1,5 @@
+import { fixIndicPdfExtractionArtifacts } from "@/lib/fix-indic-extraction-spaces";
+
 function isPdfMagic(buffer: Buffer): boolean {
   if (buffer.length < 5) {
     return false;
@@ -22,7 +24,7 @@ export async function extractTextFromPdfBuffer(
   const parser = new PDFParse({ data });
   try {
     const result = await parser.getText();
-    return result.text;
+    return fixIndicPdfExtractionArtifacts(result.text);
   } finally {
     await parser.destroy();
   }

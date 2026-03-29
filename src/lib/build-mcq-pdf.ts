@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
+import { formatGeneratedTimestampIst } from "@/lib/format-timestamp-ist";
 import type { McqEvaluationResult } from "@/lib/mcq-schemas";
 
 const require = createRequire(import.meta.url);
@@ -179,7 +180,7 @@ function buildContentBlocks({
   const blocks: Record<string, unknown>[] = [
     { text: title, style: "docTitle", font: "NotoSans" },
     {
-      text: `Generated: ${generatedAt}`,
+      text: `Generated: ${formatGeneratedTimestampIst(generatedAt)}`,
       style: "muted",
       font: "NotoSans",
       margin: [0, 4, 0, 16],

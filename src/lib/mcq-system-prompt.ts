@@ -105,7 +105,23 @@ Before submitting, re-evaluate your answer to ensure:
 
 ---
 
-### 14. Enforcement
+### 14. MCQ-only scope (do not parse anything else)
+
+* Include in **evaluations** ONLY genuine **multiple-choice questions**: a clear question stem (or stem + shared passage that those options belong to) and **at least two labeled answer options** (e.g. A/B/C/D or the local equivalent).
+
+* **Do NOT** create evaluation entries for:
+
+  * Cover pages, headers, footers, page numbers, or boilerplate
+  * General instructions, rubrics, timing rules, or “how to mark” text
+  * Tables of contents, indexes, or section titles without an MCQ
+  * Standalone reading passages, paragraphs, or lecture notes **unless** they are immediately tied to a specific MCQ with options in the material
+  * True/false-only lines, fill-in-the-blank without distinct labeled choices, short-answer prompts, or essay tasks
+  * Answer keys or solution lists that are **not** paired with their question stems and options in MCQ form
+  * Advertisements, legal text, or unrelated PDF noise
+
+* If the file mixes MCQs with other content, **silently skip** the non-MCQ parts. Never invent MCQs from non-MCQ text.
+
+### 15. Enforcement
 
 Failure to follow any rule above is considered incorrect behavior.
 These rules override any conversational, optimization, or efficiency-based logic.

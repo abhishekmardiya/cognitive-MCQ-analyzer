@@ -1,0 +1,2 @@
+- Streaming the response
+- Persist the response (or chat)

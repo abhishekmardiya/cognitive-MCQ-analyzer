@@ -1,36 +1,68 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Cognitive MCQ Analyzer
 
-## Getting Started
+A Next.js app that ingests multiple-choice question material (PDF or pasted text), uses **Google Gemini** via the [AI SDK](https://sdk.vercel.ai/docs) to parse and evaluate each question, and returns structured results plus a downloadable **PDF report**.
 
-First, run the development server:
+## Features
+
+- Upload a **PDF** (text-based PDFs work best; scanned pages need OCR elsewhere first) or **paste** raw question text.
+- Server-side extraction with `pdf-parse` for supported PDFs.
+- Structured evaluation per question: options, inferred correct answer, and explanations (explanations follow each question’s language when possible).
+- **Download** a generated analysis report as PDF (`pdfmake`).
+
+## Requirements
+
+- Node.js 20+ (recommended; aligns with typical Next.js tooling)
+- A [Google AI Studio](https://aistudio.google.com/) API key for the Gemini API
+
+## Environment variables
+
+Create `.env.local` (or `.env`) in the project root:
+
+| Variable                                           | Required | Description                            |
+| -------------------------------------------------- | -------- | -------------------------------------- |
+| `GOOGLE_GENERATIVE_AI_API_KEY` or `GEMINI_API_KEY` | Yes      | Gemini API key                         |
+| `GEMINI_MODEL`                                     | No       | Model id (default: `gemini-2.5-flash`) |
+
+## Setup
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Scripts
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+| Command          | Description             |
+| ---------------- | ----------------------- |
+| `npm run dev`    | Development server      |
+| `npm run build`  | Production build        |
+| `npm run start`  | Start production server |
+| `npm run lint`   | Biome check             |
+| `npm run format` | Biome format (write)    |
 
-## Learn More
+## API: `POST /api/evaluate`
 
-To learn more about Next.js, take a look at the following resources:
+The UI calls this route; you can also integrate programmatically.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+**Multipart** (`multipart/form-data`):
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- `file` — PDF or text file (max **4.5 MB**), or
+- `text` — plain string of the test content.
 
-## Deploy on Vercel
+**JSON** (`application/json`):
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+- `{ "text": "..." }`, or
+- `{ "pdfBase64": "...", "pdfFileName": "optional.pdf" }`.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Successful responses include `result` (structured evaluations), `pdfBase64`, `pdfFileName`, and `meta` (title, timestamp, model). Errors return `{ "error": "..." }` with an appropriate status code.
+
+The route sets `maxDuration` to **300** seconds for long generations on supported hosts (e.g. Vercel).
+
+## Tech stack
+
+- **Next.js** 16 (App Router), **React** 19
+- **ai** + **@ai-sdk/google** for Gemini and structured output (`Output.object` + Zod schemas)
+- **pdf-parse**, **pdfmake**, **zod**
+- **Tailwind CSS** 4, **Biome** for lint/format
