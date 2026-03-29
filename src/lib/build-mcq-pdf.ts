@@ -1,6 +1,10 @@
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
+import {
+  formatCorrectAnswerWithOptionText,
+  stripLeadingQuestionNumberFromStem,
+} from "@/lib/format-mcq-display";
 import { PDF_DOCUMENT_TITLE_SEPARATOR } from "@/lib/format-pdf-document-title";
 import { formatGeneratedTimestampIst } from "@/lib/format-timestamp-ist";
 import type { McqEvaluationResult } from "@/lib/mcq-schemas";
@@ -263,10 +267,13 @@ function buildContentBlocks({
       font: "NotoSans",
     });
     blocks.push({
-      ...scriptedParagraph(ev.questionText, {
-        style: "body",
-        margin: [0, 4, 0, 10],
-      }),
+      ...scriptedParagraph(
+        stripLeadingQuestionNumberFromStem(ev.questionText),
+        {
+          style: "body",
+          margin: [0, 4, 0, 10],
+        },
+      ),
     });
     blocks.push({ text: "Options", style: "subheading", font: "NotoSans" });
     for (const opt of ev.options) {
@@ -284,10 +291,13 @@ function buildContentBlocks({
       margin: [0, 10, 0, 4],
     });
     blocks.push({
-      ...scriptedParagraph(ev.correctAnswerLabel, {
-        style: "answer",
-        margin: [0, 0, 0, 10],
-      }),
+      ...scriptedParagraph(
+        formatCorrectAnswerWithOptionText(ev.options, ev.correctAnswerLabel),
+        {
+          style: "answer",
+          margin: [0, 0, 0, 10],
+        },
+      ),
     });
     blocks.push({ text: "Explanation", style: "subheading", font: "NotoSans" });
     blocks.push({

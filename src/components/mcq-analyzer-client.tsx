@@ -9,6 +9,10 @@ import {
   useRef,
   useState,
 } from "react";
+import {
+  formatCorrectAnswerWithOptionText,
+  stripLeadingQuestionNumberFromStem,
+} from "@/lib/format-mcq-display";
 import { formatGeneratedTimestampIst } from "@/lib/format-timestamp-ist";
 import {
   inputStatusBadgeClasses,
@@ -704,10 +708,11 @@ export function McqAnalyzerClient() {
             <div className="flex flex-col gap-8">
               {evaluationsForList.map((ev, idx) => {
                 const qIndex = typeof ev.index === "number" ? ev.index : idx;
-                const stem =
+                const rawStem =
                   typeof ev.questionText === "string"
                     ? ev.questionText
                     : "Receiving question text…";
+                const stem = stripLeadingQuestionNumberFromStem(rawStem);
                 const stemKey =
                   typeof ev.questionText === "string"
                     ? ev.questionText.slice(0, 24)
@@ -717,9 +722,21 @@ export function McqAnalyzerClient() {
                   (o): o is NonNullable<(typeof rawOptions)[number]> =>
                     o != null,
                 );
-                const correct =
+                const correctLabel =
                   typeof ev.correctAnswerLabel === "string"
                     ? ev.correctAnswerLabel
+                    : "";
+                const correctLine =
+                  correctLabel.length > 0
+                    ? formatCorrectAnswerWithOptionText(
+                        options.map((o) => {
+                          return {
+                            label: typeof o.label === "string" ? o.label : "",
+                            text: typeof o.text === "string" ? o.text : "",
+                          };
+                        }),
+                        correctLabel,
+                      )
                     : "…";
                 const expl =
                   typeof ev.explanation === "string"
@@ -766,11 +783,11 @@ export function McqAnalyzerClient() {
                       </ul>
                     </div>
                     <div className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50/80 px-4 py-3 dark:border-emerald-900/50 dark:bg-emerald-950/30">
-                      <p className="text-xs font-semibold uppercase tracking-wide text-emerald-900 dark:text-emerald-200">
+                      <p className="text-xs font-semibold tracking-wide text-emerald-900 dark:text-emerald-200">
                         Correct answer
                       </p>
-                      <p className="mt-1 text-sm font-semibold text-emerald-950 dark:text-emerald-100">
-                        {correct}
+                      <p className="mt-1 whitespace-pre-wrap wrap-break-word text-sm font-semibold text-emerald-950 dark:text-emerald-100">
+                        {correctLine}
                       </p>
                     </div>
                     <div className="mt-4">
