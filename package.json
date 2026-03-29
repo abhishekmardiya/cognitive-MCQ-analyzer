@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "postinstall": "patch-package",
     "dev": "next dev",
     "build": "next build",
     "ts": "npx tsc --noEmit --watch",
@@ -11,8 +12,8 @@
     "format": "biome format --write"
   },
   "dependencies": {
-    "@napi-rs/canvas": "0.1.80",
     "@ai-sdk/google": "^3.0.53",
+    "@napi-rs/canvas": "0.1.80",
     "ai": "^6.0.141",
     "next": "16.2.1",
     "pdf-parse": "^2.4.5",
@@ -29,6 +30,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "babel-plugin-react-compiler": "1.0.0",
+    "patch-package": "^8.0.1",
     "tailwindcss": "^4",
     "typescript": "^5"
   }
