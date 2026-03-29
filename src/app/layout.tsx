@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 function resolveMetadataBase(): URL {
-  return new URL("cognitive-mcq-analyzer.vercel.app");
+  return new URL("https://cognitive-mcq-analyzer.vercel.app");
 }
 
 const description =
