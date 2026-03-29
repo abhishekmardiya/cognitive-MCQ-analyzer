@@ -240,23 +240,33 @@ ${trimmed}
         const resultForClient = fixIndicInEvaluationResult(output);
 
         const generatedAt = new Date().toISOString();
-        const pdfBytes = await buildMcqPdfBuffer({
-          documentTitle: pdfDocumentTitle,
-          generatedAt,
-          result: resultForClient,
-        });
-        const pdfBase64 = Buffer.from(pdfBytes).toString("base64");
+        let pdfBase64 = "";
+        let pdfGenerationError: string | null = null;
+        try {
+          const pdfBytes = await buildMcqPdfBuffer({
+            documentTitle: pdfDocumentTitle,
+            generatedAt,
+            result: resultForClient,
+          });
+          pdfBase64 = Buffer.from(pdfBytes).toString("base64");
+        } catch (pdfErr) {
+          pdfGenerationError = formatEvaluateErrorMessage(pdfErr);
+        }
 
         writeJsonLine({
           type: "complete",
           result: resultForClient,
           pdfBase64,
-          pdfFileName: `cognitive-mcq-analysis-${Date.now()}.pdf`,
+          pdfFileName:
+            pdfBase64.length > 0
+              ? `cognitive-mcq-analysis-${Date.now()}.pdf`
+              : "",
           meta: {
             title: pdfDocumentTitle ?? PDF_APP_DOCUMENT_TITLE,
             generatedAt,
             model: modelUsed,
             modelsAttempted,
+            ...(pdfGenerationError !== null ? { pdfGenerationError } : {}),
           },
         });
       } catch (err) {

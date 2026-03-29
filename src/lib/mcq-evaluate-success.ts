@@ -5,6 +5,8 @@ export type EvaluateSuccessMeta = {
   generatedAt: string;
   model: string;
   modelsAttempted: string[];
+  /** Set when PDF generation failed but structured results succeeded. */
+  pdfGenerationError?: string;
 };
 
 export type EvaluateSuccess = {

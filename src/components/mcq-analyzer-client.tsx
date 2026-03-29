@@ -341,6 +341,8 @@ export function McqAnalyzerClient() {
             setStreamStatus(null);
           } else if (evt.type === "error") {
             streamError = evt.error;
+            setPartialResult(null);
+            setStreamStatus(null);
           }
         }
         if (streamError !== null) {
@@ -350,6 +352,8 @@ export function McqAnalyzerClient() {
 
       if (streamError !== null) {
         setError(streamError);
+        setPartialResult(null);
+        setStreamStatus(null);
       }
     } catch (submitErr) {
       const msg =
@@ -595,9 +599,12 @@ export function McqAnalyzerClient() {
                       }}
                       disabled={success.pdfBase64.length === 0}
                       title={
-                        success.pdfBase64.length === 0
-                          ? "PDF was not stored for this session."
-                          : undefined
+                        success.pdfBase64.length > 0
+                          ? undefined
+                          : success.meta.pdfGenerationError !== undefined &&
+                              success.meta.pdfGenerationError.length > 0
+                            ? success.meta.pdfGenerationError
+                            : "PDF was not generated for this session."
                       }
                       className="inline-flex h-11 min-h-11 w-full shrink-0 items-center justify-center gap-2 rounded-xl bg-emerald-600 px-5 text-sm font-semibold text-white shadow-md shadow-emerald-900/25 ring-1 ring-emerald-400/40 transition hover:bg-emerald-500 hover:shadow-lg hover:shadow-emerald-900/30 active:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50 disabled:shadow-none sm:h-auto sm:w-auto sm:min-h-10 sm:py-2.5 dark:bg-emerald-500 dark:ring-emerald-300/30 dark:hover:bg-emerald-400 dark:active:bg-emerald-600"
                     >
@@ -620,6 +627,20 @@ export function McqAnalyzerClient() {
                     </button>
                   ) : null}
                 </div>
+                {success !== null && success.pdfBase64.length === 0 ? (
+                  <output
+                    className="mt-3 border-t border-zinc-200 pt-3 text-pretty text-xs leading-relaxed text-amber-950 dark:border-zinc-700 dark:text-amber-100"
+                    aria-live="polite"
+                  >
+                    <span className="font-semibold">
+                      PDF report unavailable.
+                    </span>{" "}
+                    {success.meta.pdfGenerationError !== undefined &&
+                    success.meta.pdfGenerationError.length > 0
+                      ? success.meta.pdfGenerationError
+                      : "The downloadable file was not produced for this run."}
+                  </output>
+                ) : null}
               </div>
               <dl className="grid min-w-0 gap-3 p-4 sm:grid-cols-3 sm:gap-4 sm:p-5">
                 <div className="rounded-xl border border-zinc-100 bg-zinc-50/80 px-4 py-3 dark:border-zinc-800 dark:bg-zinc-950/50">
