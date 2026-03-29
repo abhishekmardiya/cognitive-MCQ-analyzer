@@ -1,4 +1,19 @@
+import { createRequire } from "node:module";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+
 import { fixIndicPdfExtractionArtifacts } from "@/lib/fix-indic-extraction-spaces";
+
+/** Absolute file URL so Node's dynamic import() resolves on serverless, not only relative to pdf.mjs. */
+function resolvePdfJsWorkerFileUrl(): string {
+  const require = createRequire(import.meta.url);
+  const pdfjsPkgJson = require.resolve("pdfjs-dist/package.json");
+  const workerPath = path.join(
+    path.dirname(pdfjsPkgJson),
+    "legacy/build/pdf.worker.mjs",
+  );
+  return pathToFileURL(workerPath).href;
+}
 
 /**
  * pdfjs (used by pdf-parse) references DOMMatrix at module top-level before its
@@ -52,6 +67,7 @@ export async function extractTextFromPdfBuffer(
 ): Promise<string> {
   await ensurePdfCanvasGlobals();
   const { PDFParse } = await import("pdf-parse");
+  PDFParse.setWorker(resolvePdfJsWorkerFileUrl());
   const data = new Uint8Array(buffer.length);
   data.set(buffer);
   const parser = new PDFParse({ data });
