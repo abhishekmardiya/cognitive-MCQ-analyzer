@@ -525,6 +525,12 @@ export function McqAnalyzerClient() {
             placeholder="Paste full exam text, or upload a PDF."
             className="field-sizing-content max-h-[min(28rem,60vh)] min-h-44 w-full min-w-0 resize-y overflow-x-auto overflow-y-auto rounded-xl border border-zinc-200 bg-zinc-50 p-3 font-mono text-sm leading-relaxed text-zinc-900 outline-none ring-emerald-600/0 transition focus:border-emerald-600 focus:ring-4 focus:ring-emerald-600/15 sm:min-h-55 sm:p-4 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-emerald-500"
           />
+          <p className="text-pretty text-xs leading-relaxed text-zinc-500 dark:text-zinc-400">
+            The model is limited to its knowledge cutoff: it cannot see events
+            or facts newer than that, and it does not browse the web or supply
+            live updates. Your pasted or uploaded text is the only extra context
+            it gets—add anything recent there if the review should rely on it.
+          </p>
           <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
             <button
               type="button"

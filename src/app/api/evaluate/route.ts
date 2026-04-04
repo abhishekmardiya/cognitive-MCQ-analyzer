@@ -9,7 +9,6 @@ import {
   buildPdfSourceDocumentTitle,
   PDF_APP_DOCUMENT_TITLE,
 } from "@/lib/format-pdf-document-title";
-import { DEFAULT_GEMINI_TEXT_MODEL_ID } from "@/lib/gemini-text-model-catalog";
 import {
   buildGeminiModelChain,
   resolvePreferredGeminiModel,
@@ -177,6 +176,15 @@ export async function POST(request: Request) {
   }
 
   const preferred = resolvePreferredGeminiModel(clientModelHint);
+  if (preferred === null) {
+    return Response.json(
+      {
+        error:
+          'Set DEFAULT_GEMINI_MODEL to an allowed Gemini text model id (see the built-in catalog), or pass a valid "model" field in the request.',
+      },
+      { status: 400 },
+    );
+  }
   const modelChain = buildGeminiModelChain(preferred);
 
   const google = createGoogleGenerativeAI({ apiKey });
@@ -192,7 +200,7 @@ export async function POST(request: Request) {
       try {
         const modelsAttempted: string[] = [];
         let output: McqEvaluationResult | null = null;
-        let modelUsed = modelChain[0] ?? DEFAULT_GEMINI_TEXT_MODEL_ID;
+        let modelUsed = modelChain[0];
         let lastErr: unknown;
 
         for (let i = 0; i < modelChain.length; i++) {

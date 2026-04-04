@@ -153,25 +153,6 @@ function hasRetryableHttpStatusInChain(error: unknown): boolean {
   return false;
 }
 
-function parseCommaList(raw: string | undefined): string[] {
-  if (typeof raw !== "string" || raw.trim().length === 0) {
-    return [];
-  }
-  return raw
-    .split(",")
-    .map((s) => {
-      return s.trim();
-    })
-    .filter((s) => {
-      return s.length > 0;
-    });
-}
-
-function extraAllowedIdsFromEnv(): Set<string> {
-  const extra = parseCommaList(process.env.GEMINI_EXTRA_MODEL_IDS);
-  return new Set(extra);
-}
-
 export function isAllowedGeminiTextModelId(id: string): boolean {
   if (id.length === 0 || id.length > 120) {
     return false;
@@ -179,10 +160,7 @@ export function isAllowedGeminiTextModelId(id: string): boolean {
   if (!/^[a-zA-Z0-9._-]+$/.test(id)) {
     return false;
   }
-  if (BASE_ALLOWED_IDS.has(id)) {
-    return true;
-  }
-  return extraAllowedIdsFromEnv().has(id);
+  return BASE_ALLOWED_IDS.has(id);
 }
 
 /**
@@ -281,7 +259,7 @@ export function resolvePreferredGeminiModel(
   ) {
     return fromClient;
   }
-  const fromEnv = process.env.GEMINI_MODEL;
+  const fromEnv = process.env.DEFAULT_GEMINI_MODEL;
   if (
     typeof fromEnv === "string" &&
     fromEnv.length > 0 &&

@@ -2,6 +2,8 @@
 
 A Next.js app that ingests multiple-choice question material (PDF or pasted text), uses **Google Gemini** via the [AI SDK](https://sdk.vercel.ai/docs) to parse and evaluate each question, and returns structured results plus a downloadable **PDF report**.
 
+**Limitations:** this app does **not** fetch live web data or “current affairs” feeds. Models use **training knowledge only** (each has a [documented knowledge cutoff](https://ai.google.dev/gemini-api/docs/models)) plus the **text or PDF you supply**. It is not a substitute for verifying time-sensitive facts elsewhere.
+
 ## Features
 
 - Upload a **PDF** or **paste** raw question text. Plain **text files** are also accepted when uploaded.
@@ -9,7 +11,7 @@ A Next.js app that ingests multiple-choice question material (PDF or pasted text
 - **Large tests**: long material or many numbered questions trigger **multi-pass evaluation**. For **PDF uploads** (Gemini path), each pass now scopes by **PDF page ranges** aligned with the old part count—**no plaintext excerpt** in the prompt—so stems and options are not copied from a broken text layer while explanations stay correct. Results are **merged and deduped**; the stream shows `Processing PDF pages …` or `Processing part N of M…` between passes.
 - **Streaming responses**: evaluation is streamed with **NDJSON** so the UI can show **partial structured results** as the model fills them in, then the final payload includes the complete evaluation and PDF report.
 - **Summary panel** shows model used, **India Standard Time (IST)** for the run, and an **input status** badge when the model flags incomplete or ambiguous input.
-- **Model choice**: optional `GEMINI_MODEL` env (or JSON `model` on `/api/evaluate`) selects a built-in Gemini or Gemma text id; otherwise the server starts from the catalog default. The server uses an **ordered fallback chain** when quota/rate limits apply: it combines the thrown error with **`streamText` `onError`** (stream failures often become `NoOutputGeneratedError` without attaching `AI_APICallError` to `catch`), treats that SDK message as retryable, and uses **`maxRetries: 0`** so the same model is not retried in the SDK. Gemma ids are tried after the Gemini entries in the chain. You’ll see `status` lines and `modelsAttempted` when a fallback ran.
+- **Model choice**: set **`DEFAULT_GEMINI_MODEL`** to a built-in Gemini or Gemma text id when the client does not send `model` on `/api/evaluate` (the web UI does not send a model, so the env var is required for normal use). The server uses an **ordered fallback chain** when quota/rate limits apply: it combines the thrown error with **`streamText` `onError`** (stream failures often become `NoOutputGeneratedError` without attaching `AI_APICallError` to `catch`), treats that SDK message as retryable, and uses **`maxRetries: 0`** so the same model is not retried in the SDK. Gemma ids are tried after the Gemini entries in the chain. You’ll see `status` lines and `modelsAttempted` when a fallback ran.
 - Structured evaluation per question: options, inferred correct answer, and explanations (explanations follow each question’s language when possible). Explanations are **short and JSON-safe** (schema max **560** Unicode chars, one line, no raw `"` inside strings) so the model does not truncate mid-JSON. If parsing still fails, the server **retries** the same pass with stricter caps (then once more with minimal explanations).
 - **Download** a generated analysis report as PDF (`pdfmake`); report timestamps use **IST** for readability.
 - **Review history (this browser only)**: successful runs are saved to **IndexedDB**. Reopen a past review, delete entries, and get a notice if storage is tight and the **PDF bytes were omitted** from a saved session (structured results are still kept).
@@ -23,13 +25,14 @@ A Next.js app that ingests multiple-choice question material (PDF or pasted text
 
 Create `.env.local` (or `.env`) in the project root:
 
-| Variable                                           | Required | Description                                                                                                                                                                                                                                                                          |
-| -------------------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `GOOGLE_GENERATIVE_AI_API_KEY` or `GEMINI_API_KEY` | Yes      | Gemini API key                                                                                                                                                                                                                                                                       |
-| `GEMINI_MODEL`                                     | No       | Default model id when the client does not send one (must be in the built-in allowlist; default is `gemini-3.1-flash-lite-preview`). The built-in catalog favors common free-tier quotas; add ids via `GEMINI_EXTRA_MODEL_IDS` if your project still has access to models we omitted. |
-| `GEMINI_EXTRA_MODEL_IDS`                           | No       | Comma-separated extra model ids allowed for client/env selection (each id must match `[a-zA-Z0-9._-]`, max length 120)                                                                                                                                                               |
+| Variable                                           | Required | Description                                                                                                                                                                                 |
+| -------------------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GOOGLE_GENERATIVE_AI_API_KEY` or `GEMINI_API_KEY` | Yes      | Gemini API key                                                                                                                                                                              |
+| `DEFAULT_GEMINI_MODEL`                             | Yes†     | Model id when the client does not send `model` (must be in the built-in catalog). Required for requests that omit `model` (including the app UI). Example: `gemini-3.1-flash-lite-preview`. |
 
-The app only accepts model ids from its **catalog** plus any ids listed in `GEMINI_EXTRA_MODEL_IDS`, so arbitrary strings from the client cannot be used to probe unknown endpoints.
+† Omit only if every caller passes a valid `model` in the request body.
+
+Only model ids from the **built-in catalog** in `src/lib/gemini-text-model-catalog.ts` are accepted for `DEFAULT_GEMINI_MODEL` and request `model`; arbitrary strings are rejected.
 
 ## Setup
 

@@ -2,6 +2,11 @@ export const MCQ_SYSTEM_PROMPT = `You are an expert evaluator tasked with review
 
 Follow these rules strictly:
 
+### Knowledge scope (no live web data)
+
+* You do **not** have internet access, search, or real-time feeds—only your training knowledge (subject to the model’s cutoff) and the exam material in this request.
+* For items that depend on **very recent events**, **current affairs**, or facts that may have changed after your cutoff, be explicit when the answer is uncertain and **do not invent** up-to-date specifics.
+
 ### 1. Accuracy First
 
 * Do not guess.
